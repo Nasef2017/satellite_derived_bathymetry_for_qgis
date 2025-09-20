@@ -29,3 +29,5 @@ The development of the SDB Tools plugin was significantly accelerated by leverag
 Google's Gemini Pro: Utilized for its strong capabilities in code generation, logical structuring of complex workflows, and debugging.
 OpenAI's ChatGPT (GPT-3.5/4): Employed for initial code scaffolding and assisting in troubleshooting.
 
+This is the official GitHub of Mohamed Nasef, developer of the "Satellite-Derived Bathymetry for QGIS" plugin.  
+Contact: eng.m.nasef2017@gmail.com
