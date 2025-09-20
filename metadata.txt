@@ -1,76 +1,18 @@
-; This file is for QGIS to recognize and display the plugin information
-; in the Plugin Manager. Semicolons are used for comments.
-
 [general]
-; The name of the plugin
-name=SDB Tools for QGIS
-
-; The minimum version of QGIS required to run the plugin.
-; 3.22 is a good choice as it's a recent LTR (Long Term Release).
+name=satellite_derived_bathymetry_for_qgis
 qgisMinimumVersion=3.22
-
-; A short, one-line description of what the plugin does.
+version=1.0
+author=Nasef M.Aly
+email=Nasef.M.Aly@alexu.edu.eg
 description=A comprehensive and automated toolkit for Satellite-Derived Bathymetry (SDB) using machine learning.
 
-; The long description, which appears in the Plugin Manager. This supports HTML for formatting.
-about=<h3>SDB Master Workflow: The Ultimate User Guide</h3>
-        
-        <h4>1. Introduction: What is this Tool?</h4>
-        <p>The <b>SDB Master Workflow</b> is a powerful and integrated tool for <b>QGIS</b> designed to fully automate the process of <b>Satellite-Derived Bathymetry (SDB)</b>. Instead of manually testing different algorithms, this tool acts as an "automated expert," intelligently running a comprehensive suite of <b>machine learning</b> models, comparing their performance, selecting the best one for your specific data, and producing a final, high-quality depth map—all in a single click.</p>
-        <p>This workflow follows the best practices recommended by international bodies like the <b>International Hydrographic Organization (IHO)</b> and empowers you to derive accurate bathymetry from satellite imagery efficiently and reliably.</p>
-        
-        <h4>2. The Automated Workflow Explained</h4>
-        The tool follows a logical, four-stage pipeline:
-        <ol>
-            <li><b>Pre-processing and Smart Water Masking:</b> The tool automatically calculates a water index (<b>MNDWI</b> or <b>NDWI</b>) and applies morphological cleaning to create a high-quality, "clean," water-only version of your satellite image. All subsequent analyses are performed exclusively on this masked image.</li>
-            <li><b>Algorithm Comparison and Hyperparameter Tuning:</b> For each selected algorithm, the tool performs a <b>Smart Search (Bayesian Optimization)</b> to discover the optimal settings (<b>hyperparameters</b>) for your specific data before training the final model.</li>
-            <li><b>Post-processing with Median Filter (Optional):</b> If enabled, the tool applies a <b>Median Filter</b> to every raw depth map to remove "salt-and-pepper" noise, resulting in smoother and more realistic outputs.</li>
-            <li><b>Evaluation and the Decision Engine:</b> Each model is rigorously tested against your <b>Unseen Test Points</b>. A <b>Final Score</b> is calculated (70% weight for <b>R²</b>, 30% for <b>RMSE</b>) to objectively rank the models. The tool generates a master report and automatically loads the raster from the winning algorithm into QGIS.</li>
-        </ol>
-        
-        <h4>3. Further Reading and Scientific References</h4>
-        For a deeper understanding, we highly recommend the following resources:
-        <ul>
-            <li><b>IHO Publication B-13: Cookbook for Satellite-Derived Bathymetry:</b> The essential global reference standard for SDB. Search for it on the <b>IHO</b> website: <a href="https://iho.int/">https://iho.int/</a></li>
-            <li><b>Stumpf, R. P., et al. (2003).</b> The original paper for the <b>Band Ratio</b> model. *Limnology and Oceanography*.</li>
-            <li><b>Caballero, I., & Stumpf, R. P. (2019).</b> A great paper comparing <b>machine learning (like RandomForest)</b> to the Band Ratio model. *Remote Sensing*.</li>
-        </ul>
+about=<h3>SDB Master Workflow</h3> <p>The SDB Master Workflow is a powerful QGIS tool that automates Satellite-Derived Bathymetry (SDB) processing. It combines preprocessing, algorithm testing, objective ranking of models, and automated reporting. The tool is designed for both scientific research and practical applications in hydrography and coastal engineering. It follows international recommendations (IHO) and supports reproducible and efficient workflows.</p> <p><b>Workflow Stages:</b><br> 1. Pre-processing and smart water masking (MNDWI/NDWI + morphological cleaning).<br> 2. Algorithm comparison with hyperparameter tuning (Bayesian Optimization).<br> 3. Optional median filtering to reduce noise.<br> 4. Evaluation using test points with weighted scoring (70%% R², 30%% RMSE).</p> <p><b>References:</b><br> - IHO Publication B-13: Cookbook for Satellite-Derived Bathymetry (<a href="https://iho.int/">IHO website</a>)<br> - Stumpf et al. (2003). Band Ratio Model in Limnology and Oceanography.<br> - Caballero & Stumpf (2019). Machine Learning vs Band Ratio in Remote Sensing.</p> <p><b>Acknowledgements:</b><br> Development and refinement of this plugin leveraged AI-assisted tools: Google Gemini Pro (workflow design, debugging, optimization), OpenAI ChatGPT (initial scaffolding, troubleshooting).</p>
 
-        <h4>4. Acknowledgements and Tool Development</h4>
-        <p>The development, coding, and refinement of the <b>SDB Tools</b> plugin and the <b>SDB Master Workflow</b> were significantly accelerated by leveraging advanced AI language models.</p>
-        <p>We would like to acknowledge the use of the following models in the development process:</p>
-        <ul>
-            <li><b>Google's Gemini Pro:</b> Utilized for its strong capabilities in code generation, logical structuring of complex workflows, debugging, and providing detailed, context-aware explanations of algorithms and best practices.</li>
-            <li><b>OpenAI's ChatGPT (GPT-3.5/4):</b> Employed for initial code scaffolding and assisting in troubleshooting common Python and QGIS API-related errors.</li>
-        </ul>
+homepage=https://github.com/Nasef2017/Satellite-Derived-Bathymetry-for-QGIS
+repository=https://github.com/Nasef2017/Satellite-Derived-Bathymetry-for-QGIS
+tracker=https://github.com/Nasef2017/Satellite-Derived-Bathymetry-for-QGIS/issues
 
-; The version number of your plugin
-version=1.0
-
-; Your name
-author=Nasef M.Aly
-
-; Your email address
-email=your.email@example.com
-
-; A link to the plugin's homepage or documentation
-homepage=
-
-; A link to the bug tracker for your plugin
-tracker=
-
-; A link to the code repository (e.g., GitHub)
-repository=
-
-; Keywords that describe your plugin, separated by commas
 tags=sdb,bathymetry,satellite,remote sensing,machine learning,regression,coastal,water,RandomForest,automation,hydrography
-
-; The category in QGIS where the plugin will be listed
 category=Raster
-
-; A simple changelog for the current version
 changelog=Initial release of the SDB Tools suite, featuring the Master Workflow for automated model comparison and prediction.
-
-; A list of external Python libraries that the plugin depends on.
-; QGIS will check for these and prompt the user if they are missing.
 plugin_dependencies=scikit-learn,rasterio,scikit-optimize,scipy,pandas,numpy,matplotlib
