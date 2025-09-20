@@ -30,4 +30,5 @@ Google's Gemini Pro: Utilized for its strong capabilities in code generation, lo
 OpenAI's ChatGPT (GPT-3.5/4): Employed for initial code scaffolding and assisting in troubleshooting.
 
 This is the official GitHub of Mohamed Nasef, developer of the "Satellite-Derived Bathymetry for QGIS" plugin.  
-Contact: eng.m.nasef2017@gmail.com
+Contact: eng.m.nasef2017@gmail.com or Nasef.M.Aly@alexu.edu.eg
+
