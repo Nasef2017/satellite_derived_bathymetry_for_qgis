@@ -31,17 +31,30 @@ class BandRatioStumpfAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterFile(self.INPUT_SAMPLES_FILE, 'Sample points file (CSV/XYZ, optional)', optional=True, fileFilter='*.csv;*.xyz;*.txt'))
         self.addParameter(QgsProcessingParameterField(self.DEPTH_FIELD_VEC, 'Depth field (vector)', parentLayerParameterName=self.INPUT_SAMPLES_VEC, type=QgsProcessingParameterField.Numeric, optional=True))
         self.addParameter(QgsProcessingParameterString(self.DEPTH_FIELD_FILE, 'Depth column name (CSV/XYZ)', optional=True))
+        
         self.addParameter(QgsProcessingParameterBand(self.BAND_HIGH_REF, 'High Reflectance Band (e.g., Green)', parentLayerParameterName=self.INPUT_RASTER, defaultValue=3))
         self.addParameter(QgsProcessingParameterBand(self.BAND_LOW_REF, 'Low Reflectance Band (e.g., Blue)', parentLayerParameterName=self.INPUT_RASTER, defaultValue=2))
+
         self.addParameter(QgsProcessingParameterFolderDestination(self.OUTPUT_FOLDER, 'Output Folder'))
 
-    def name(self): return 'bandratio'
-    def displayName(self): return 'ML: Band Ratio (Stumpf Log-Ratio)'
-    def group(self): return 'SDB Tools'
-    def groupId(self): return 'sdb_tools'
-    def shortHelpString(self): return 'Applies the Stumpf et al. (2003) log-ratio model, automatically finding best m0 and m1.'
-    def createInstance(self): return BandRatioStumpfAlgorithm()
-
+    def name(self): 
+        return 'bandratio'
+        
+    def displayName(self): 
+        return 'ML: Band Ratio (Stumpf Log-Ratio)'
+        
+    def group(self): 
+        return 'SDB Tools'
+        
+    def groupId(self): 
+        return 'sdb_tools'
+        
+    def shortHelpString(self): 
+        return 'Applies the Stumpf et al. (2003) log-ratio model, automatically finding best m0 and m1 for the selected bands.'
+        
+    def createInstance(self): 
+        return BandRatioStumpfAlgorithm()
+    
     def _read_samples_from_vector(self, vlayer, depth_field, feedback):
         if vlayer is None: raise RuntimeError('Vector layer not provided.')
         if not depth_field:
@@ -129,7 +142,10 @@ class BandRatioStumpfAlgorithm(QgsProcessingAlgorithm):
             f.write(f"Calculated m1 (slope): {m1:.4f}\nCalculated m0 (intercept): {m0:.4f}\n\n"); f.write("--- Performance on Test Set ---\n")
             f.write(f"R-squared (R2): {r2:.4f}\n"); f.write(f"Root Mean Squared Error (RMSE): {rmse:.4f}\n"); f.write(f"Mean Absolute Error (MAE): {mae:.4f}\n")
         
-        pd.DataFrame({'x_orig': [sample_rows[i][0] for i in idx_test],'y_orig': [sample_rows[i][1] for i in idx_test],'depth_true': y_test,'depth_pred': y_pred}).to_csv(samples_csv, index=False)
+        test_coords = [sample_rows[i] for i in idx_test]
+        results_df = pd.DataFrame({'x_orig': [c[0] for c in test_coords], 'y_orig': [c[1] for c in test_coords], 'depth_true': y_test, 'depth_pred': y_pred})
+        results_df.to_csv(samples_csv, index=False, float_format='%.4f')
+        
         plt.figure(figsize=(6,6)); plt.scatter(y_test, y_pred, alpha=0.6)
         mmin, mmax = min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())
         plt.plot([mmin, mmax], [mmin, mmax], 'r--'); plt.xlabel('Observed'); plt.ylabel('Predicted')
