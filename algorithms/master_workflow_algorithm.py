@@ -4,7 +4,8 @@ from qgis.core import (
     QgsProcessingParameterFile, QgsProcessingParameterField,
     QgsProcessingParameterString, QgsProcessingParameterNumber,
     QgsProcessingParameterBand, QgsProcessingParameterFolderDestination,
-    QgsProcessingParameterBoolean, QgsRasterLayer, QgsProject, QgsProcessingUtils
+    QgsProcessingParameterBoolean, QgsRasterLayer, QgsProject, QgsProcessingUtils,
+    QgsApplication
 )
 import os
 import time
@@ -20,6 +21,7 @@ except ImportError:
     scipy_installed = False
 
 class MasterWorkflowAlgorithm(QgsProcessingAlgorithm):
+    # (تعريف المدخلات يبقى كما هو)
     INPUT_RASTER = 'INPUT_RASTER'; INPUT_TRAINING_VEC = 'INPUT_TRAINING_VEC'; INPUT_TESTING_VEC = 'INPUT_TESTING_VEC'
     DEPTH_FIELD_TRAINING = 'DEPTH_FIELD_TRAINING'; DEPTH_FIELD_TESTING = 'DEPTH_FIELD_TESTING'; N_ITERATIONS = 'N_ITERATIONS'
     OUTPUT_FOLDER = 'OUTPUT_FOLDER'; GREEN_BAND = 'GREEN_BAND'; NIR_BAND = 'NIR_BAND'; SWIR_BAND = 'SWIR_BAND'
@@ -27,6 +29,8 @@ class MasterWorkflowAlgorithm(QgsProcessingAlgorithm):
     RUN_MLP = 'RUN_MLP'; RUN_SVR = 'RUN_SVR'; RUN_KNN = 'RUN_KNN'; RUN_DT = 'RUN_DT'; RUN_ELASTIC = 'RUN_ELASTIC'
     RUN_RIDGE = 'RUN_RIDGE'; RUN_LASSO = 'RUN_LASSO'; RUN_LINEAR = 'RUN_LINEAR'; RUN_BANDRATIO = 'RUN_BANDRATIO'
     MEDIAN_FILTER_SIZE = 'MEDIAN_FILTER_SIZE'
+    BANDRATIO_HIGH = 'BANDRATIO_HIGH'
+    BANDRATIO_LOW = 'BANDRATIO_LOW'
 
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterRasterLayer(self.INPUT_RASTER, 'Input Satellite Image'))
@@ -38,13 +42,18 @@ class MasterWorkflowAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterField(self.DEPTH_FIELD_TRAINING, 'Depth Field (Training)', parentLayerParameterName=self.INPUT_TRAINING_VEC, type=QgsProcessingParameterField.Numeric))
         self.addParameter(QgsProcessingParameterVectorLayer(self.INPUT_TESTING_VEC, 'Unseen Testing Points'))
         self.addParameter(QgsProcessingParameterField(self.DEPTH_FIELD_TESTING, 'Depth Field (Testing)', parentLayerParameterName=self.INPUT_TESTING_VEC, type=QgsProcessingParameterField.Numeric))
+        
         self.addParameter(QgsProcessingParameterBoolean(self.RUN_RF, 'Run: RandomForest', defaultValue=True)); self.addParameter(QgsProcessingParameterBoolean(self.RUN_GB, 'Run: Gradient Boosting', defaultValue=True))
         self.addParameter(QgsProcessingParameterBoolean(self.RUN_ET, 'Run: Extra Trees', defaultValue=True)); self.addParameter(QgsProcessingParameterBoolean(self.RUN_MLP, 'Run: MLP (Neural Network)', defaultValue=False))
         self.addParameter(QgsProcessingParameterBoolean(self.RUN_SVR, 'Run: SVR (can be very slow)', defaultValue=False)); self.addParameter(QgsProcessingParameterBoolean(self.RUN_KNN, 'Run: KNN', defaultValue=True))
         self.addParameter(QgsProcessingParameterBoolean(self.RUN_DT, 'Run: Decision Tree', defaultValue=False)); self.addParameter(QgsProcessingParameterBoolean(self.RUN_ELASTIC, 'Run: ElasticNet', defaultValue=False))
         self.addParameter(QgsProcessingParameterBoolean(self.RUN_RIDGE, 'Run: Ridge', defaultValue=False)); self.addParameter(QgsProcessingParameterBoolean(self.RUN_LASSO, 'Run: Lasso', defaultValue=False))
         self.addParameter(QgsProcessingParameterBoolean(self.RUN_LINEAR, 'Run: Linear Regression', defaultValue=True))
-        self.addParameter(QgsProcessingParameterBoolean(self.RUN_BANDRATIO, 'Run: Band Ratio (Auto-Search)', defaultValue=True))
+        
+        self.addParameter(QgsProcessingParameterBoolean(self.RUN_BANDRATIO, 'Run: Band Ratio (Stumpf)', defaultValue=True))
+        self.addParameter(QgsProcessingParameterBand(self.BANDRATIO_HIGH, 'Band Ratio - High Reflectance Band (e.g., Green)', parentLayerParameterName=self.INPUT_RASTER, defaultValue=3))
+        self.addParameter(QgsProcessingParameterBand(self.BANDRATIO_LOW, 'Band Ratio - Low Reflectance Band (e.g., Blue)', parentLayerParameterName=self.INPUT_RASTER, defaultValue=2))
+
         self.addParameter(QgsProcessingParameterNumber(self.N_ITERATIONS, 'Search Iterations (for complex models)', type=QgsProcessingParameterNumber.Integer, defaultValue=20, minValue=10))
         self.addParameter(QgsProcessingParameterNumber(self.MEDIAN_FILTER_SIZE, 'Apply Median Filter to ALL Results (0 to disable)', type=QgsProcessingParameterNumber.Integer, defaultValue=3, minValue=0))
         self.addParameter(QgsProcessingParameterFolderDestination(self.OUTPUT_FOLDER, 'Main Output Folder'))
@@ -56,40 +65,9 @@ class MasterWorkflowAlgorithm(QgsProcessingAlgorithm):
     def createInstance(self): return MasterWorkflowAlgorithm()
     
     def shortHelpString(self):
-        return """
-        <h2>SDB Master Workflow: The Ultimate User Guide</h2>
-        
-        <h3>1. Introduction: What is this Tool?</h3>
-        <p>The <b>SDB Master Workflow</b> is a powerful and integrated tool for <b>QGIS</b> designed to fully automate the process of <b>Satellite-Derived Bathymetry (SDB)</b>. Instead of manually testing different algorithms, this tool acts as an "automated expert," intelligently running a comprehensive suite of <b>machine learning</b> models, comparing their performance, selecting the best one for your specific data, and producing a final, high-quality depth map—all in a single click.</p>
-        <p>This workflow follows the best practices recommended by international bodies like the <b>International Hydrographic Organization (IHO)</b> and empowers you to derive accurate bathymetry from satellite imagery efficiently and reliably.</p>
-        
-        <h3>2. The Automated Workflow Explained</h3>
-        The tool follows a logical, four-stage pipeline:
-        <ol>
-            <li><b>Pre-processing and Smart Water Masking:</b> The tool automatically calculates a water index (<b>MNDWI</b> or <b>NDWI</b>) and applies morphological cleaning (opening and closing) to create a high-quality, "clean," water-only version of your satellite image. All subsequent analyses are performed exclusively on this masked image.</li>
-            <li><b>Algorithm Comparison and Hyperparameter Tuning:</b> For each selected algorithm, the tool performs a <b>Smart Search (Bayesian Optimization)</b> to discover the optimal settings (<b>hyperparameters</b>) for your specific data before training the final model.</li>
-            <li><b>Post-processing with Median Filter (Optional):</b> If enabled, the tool applies a <b>Median Filter</b> to every raw depth map to remove "salt-and-pepper" noise, resulting in smoother and more realistic outputs.</li>
-            <li><b>Evaluation and the Decision Engine:</b> Each model is rigorously tested against your <b>Unseen Test Points</b>. A <b>Final Score</b> is calculated (70% weight for <b>R²</b>, 30% for <b>RMSE</b>) to objectively rank the models. The tool generates a master report and automatically loads the raster from the winning algorithm into QGIS.</li>
-        </ol>
-        
-        <h3>3. Further Reading and Scientific References</h3>
-        For a deeper understanding, we highly recommend the following resources:
-        <ul>
-            <li><b>IHO Publication B-13: Cookbook for Satellite-Derived Bathymetry:</b> The essential global reference standard for SDB. Search for it on the <b>IHO</b> website: <a href="https://iho.int/">https://iho.int/</a></li>
-            <li><b>Stumpf, R. P., et al. (2003).</b> The original paper for the <b>Band Ratio</b> model. *Limnology and Oceanography*.</li>
-            <li><b>Caballero, I., & Stumpf, R. P. (2019).</b> A great paper comparing <b>machine learning (like RandomForest)</b> to the Band Ratio model. *Remote Sensing*.</li>
-        </ul>
-
-        <h3>4. Acknowledgements and Tool Development</h3>
-        <p>The development of the <b>SDB Tools</b> plugin was significantly accelerated by leveraging advanced AI language models.</p>
-        <ul>
-            <li><b>Google's Gemini Pro:</b> Utilized for its strong capabilities in code generation, logical structuring of complex workflows, and debugging.</li>
-            <li><b>OpenAI's ChatGPT (GPT-3.5/4):</b> Employed for initial code scaffolding and assisting in troubleshooting.</li>
-        </ul>
-        """
+        return "This master tool automates the entire SDB process by running and comparing a selection of algorithms."
             
     def processAlgorithm(self, parameters, context, feedback):
-        from qgis.core import QgsApplication
         provider_id = 'sdb_tools'
         provider = QgsApplication.processingRegistry().providerById(provider_id)
         if not provider:
@@ -107,6 +85,8 @@ class MasterWorkflowAlgorithm(QgsProcessingAlgorithm):
         swir_band_idx = self.parameterAsInt(parameters, self.SWIR_BAND, context)
         threshold = self.parameterAsDouble(parameters, self.WATER_INDEX_THRESHOLD, context)
         filter_size = self.parameterAsInt(parameters, self.MEDIAN_FILTER_SIZE, context)
+        br_high_idx = self.parameterAsInt(parameters, self.BANDRATIO_HIGH, context)
+        br_low_idx = self.parameterAsInt(parameters, self.BANDRATIO_LOW, context)
         start_time = time.time()
 
         if filter_size > 1 and not scipy_installed:
@@ -147,13 +127,13 @@ class MasterWorkflowAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo(f"Masked image created at: {masked_image_path}"); feedback.setProgress(10)
 
         all_algorithms = {
-            self.RUN_RF: ('autopredict', 'sdb_tools:sdb_autopredict_rf', 'rf', 'RandomForest'), self.RUN_GB: ('autopredict', 'sdb_tools:sdb_autopredict_gb', 'gb', 'Gradient Boosting'),
-            self.RUN_ET: ('autopredict', 'sdb_tools:sdb_autopredict_extratrees', 'extratrees', 'Extra Trees'), self.RUN_MLP: ('autopredict', 'sdb_tools:sdb_autopredict_mlp', 'mlp', 'MLP'),
-            self.RUN_SVR: ('autopredict', 'sdb_tools:sdb_autopredict_svr', 'svr', 'SVR'), self.RUN_KNN: ('autopredict', 'sdb_tools:sdb_autopredict_knn', 'knn', 'KNN'),
-            self.RUN_DT: ('autopredict', 'sdb_tools:sdb_autopredict_decisiontree', 'dt', 'Decision Tree'), self.RUN_ELASTIC: ('autopredict', 'sdb_tools:sdb_autopredict_elasticnet', 'elasticnet', 'ElasticNet'),
-            self.RUN_RIDGE: ('autopredict', 'sdb_tools:sdb_autopredict_ridge', 'ridge', 'Ridge'), self.RUN_LASSO: ('autopredict', 'sdb_tools:sdb_autopredict_lasso', 'lasso', 'Lasso'),
-            self.RUN_LINEAR: ('simple', 'sdb_tools:ml_linear', 'linear', 'Linear Regression'), 
-            self.RUN_BANDRATIO: ('autopredict_br', 'sdb_tools:sdb_autopredict_bandratio', 'bandratio', 'Band Ratio')
+            self.RUN_RF: ('autopredict', f'{provider_id}:sdb_autopredict_rf', 'rf', 'RandomForest'), self.RUN_GB: ('autopredict', f'{provider_id}:sdb_autopredict_gb', 'gb', 'Gradient Boosting'),
+            self.RUN_ET: ('autopredict', f'{provider_id}:sdb_autopredict_extratrees', 'extratrees', 'Extra Trees'), self.RUN_MLP: ('autopredict', f'{provider_id}:sdb_autopredict_mlp', 'mlp', 'MLP'),
+            self.RUN_SVR: ('autopredict', f'{provider_id}:sdb_autopredict_svr', 'svr', 'SVR'), self.RUN_KNN: ('autopredict', f'{provider_id}:sdb_autopredict_knn', 'knn', 'KNN'),
+            self.RUN_DT: ('autopredict', f'{provider_id}:sdb_autopredict_decisiontree', 'dt', 'Decision Tree'), self.RUN_ELASTIC: ('autopredict', f'{provider_id}:sdb_autopredict_elasticnet', 'elasticnet', 'ElasticNet'),
+            self.RUN_RIDGE: ('autopredict', f'{provider_id}:sdb_autopredict_ridge', 'ridge', 'Ridge'), self.RUN_LASSO: ('autopredict', f'{provider_id}:sdb_autopredict_lasso', 'lasso', 'Lasso'),
+            self.RUN_LINEAR: ('simple', f'{provider_id}:ml_linear', 'linear', 'Linear Regression'), 
+            self.RUN_BANDRATIO: ('simple', f'{provider_id}:bandratio', 'bandratio', 'Band Ratio')
         }
         selected_algs_to_run = [info for param, info in all_algorithms.items() if self.parameterAsBool(parameters, param, context)]
         
@@ -168,10 +148,14 @@ class MasterWorkflowAlgorithm(QgsProcessingAlgorithm):
             alg_output_folder = os.path.join(main_output_folder, alg_name)
             os.makedirs(alg_output_folder, exist_ok=True)
             params = {'INPUT_RASTER': masked_image_path, 'INPUT_SAMPLES_VEC': training_points, 'DEPTH_FIELD_VEC': depth_field_training, 'OUTPUT_FOLDER': alg_output_folder}
-            if alg_type in ['autopredict', 'autopredict_br']:
-                if alg_type == 'autopredict': params['N_ITERATIONS'] = n_iterations
+            
+            if alg_type == 'autopredict':
+                params['N_ITERATIONS'] = n_iterations
                 predicted_raster_filename = f"autopredict_{alg_name}_depth.tif"; internal_report_filename = f"autopredict_{alg_name}_report.txt"
             else:
+                if alg_id.endswith('bandratio'):
+                    if br_high_idx == 0 or br_low_idx == 0: feedback.pushWarning("Band Ratio was selected but its bands were not specified. Skipping."); continue
+                    params['BAND_HIGH_REF'] = br_high_idx; params['BAND_LOW_REF'] = br_low_idx
                 predicted_raster_filename = f"{alg_name}_depth.tif"; internal_report_filename = f"{alg_name}_report.txt"
             
             try: processing.run(alg_id, params, context=context, feedback=feedback, is_child_algorithm=True)
