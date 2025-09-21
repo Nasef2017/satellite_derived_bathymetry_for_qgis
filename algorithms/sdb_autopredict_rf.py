@@ -118,26 +118,32 @@ class RandomForestAutoPredictAlgorithm(QgsProcessingAlgorithm):
             bands = [src.read(i + 1).astype('float32') for i in range(src.count)]
             transform = src.transform
             raster_crs = raster_layer.crs()
-        X_list, y_list, sample_rows = [], [], []
+        
+        processed_data = []
         for _, row in samples_df.iterrows():
             x0, y0, depth = row['x'], row['y'], row['depth']
             x2, y2 = self._transform_point_if_needed(x0, y0, sample_crs, raster_crs, feedback)
-            col, row_idx = ~transform * (x2, y2)
-            r_i, c_i = int(row_idx), int(col)
+            col, row_idx = ~transform * (x2, y2); r_i, c_i = int(row_idx), int(col)
             if 0 <= r_i < bands[0].shape[0] and 0 <= c_i < bands[0].shape[1]:
                 feat = [b[r_i, c_i] for b in bands]
                 if not any(np.isnan(feat)):
-                    X_list.append(feat)
-                    y_list.append(depth)
-                    sample_rows.append((x0, y0, depth))
-        X, y = np.array(X_list), np.array(y_list)
-        if len(y) < 20: raise RuntimeError("Not enough samples for a reliable search.")
+                    processed_data.append([x0, y0, depth] + feat)
         
-        scaler = StandardScaler().fit(X)
-        X_scaled = scaler.transform(X)
-        min_bounds, max_bounds = X.min(axis=0), X.max(axis=0)
+        num_bands = len(bands)
+        columns = ['x_orig', 'y_orig', 'depth'] + [f'band_{i+1}' for i in range(num_bands)]
+        processed_df = pd.DataFrame(processed_data, columns=columns)
         
-        X_train_full, X_test, y_train_full, y_test, _, idx_test = train_test_split(X_scaled, y, np.arange(len(y)), test_size=0.3, random_state=42)
+        if len(processed_df) < 20: raise RuntimeError("Not enough valid samples for a reliable search.")
+
+        features = processed_df.drop(columns=['x_orig', 'y_orig', 'depth'])
+        target = processed_df['depth']
+        coords = processed_df[['x_orig', 'y_orig']]
+
+        scaler = StandardScaler().fit(features)
+        X_scaled = scaler.transform(features)
+        min_bounds, max_bounds = features.min(axis=0).values, features.max(axis=0).values
+        
+        X_train_full, X_test, y_train_full, y_test, coords_train, coords_test = train_test_split(X_scaled, target, coords, test_size=0.3, random_state=42)
         X_train_search, X_val_search, y_train_search, y_val_search = train_test_split(X_train_full, y_train_full, test_size=0.25, random_state=42)
         feedback.pushInfo(f"Data ready for search. Training on {len(y_train_search)}, validating on {len(y_val_search)}.")
         
@@ -152,9 +158,7 @@ class RandomForestAutoPredictAlgorithm(QgsProcessingAlgorithm):
         @use_named_args(param_space)
         def objective_function(**params):
             if feedback.isCanceled(): return 1e9
-            reg_search.set_params(**params)
-            reg_search.fit(X_train_search, y_train_search)
-            return -reg_search.score(X_val_search, y_val_search)
+            reg_search.set_params(**params); reg_search.fit(X_train_search, y_train_search); return -reg_search.score(X_val_search, y_val_search)
         
         progress_callback = lambda res: feedback.setProgress(int(100 * (len(res.x_iters) + 1) / n_iterations))
         search_results = gp_minimize(objective_function, param_space, n_calls=n_iterations, random_state=42, callback=progress_callback)
@@ -163,39 +167,33 @@ class RandomForestAutoPredictAlgorithm(QgsProcessingAlgorithm):
         best_params = dict(zip([dim.name for dim in param_space], search_results.x))
         feedback.pushInfo(f"Search complete. Best parameters found: {best_params}")
         
-        feedback.pushInfo("\nStep 3: Training final model on all training data with best parameters...")
+        feedback.pushInfo("\nStep 3: Training final model...")
         final_model = RandomForestRegressor(random_state=42, n_jobs=-1, **best_params)
         final_model.fit(X_train_full, y_train_full)
         
-        feedback.pushInfo("\nStep 4: Evaluating final model and generating outputs...")
-        y_pred = final_model.predict(X_test)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        mae = mean_absolute_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
+        feedback.pushInfo("\nStep 4: Evaluating and generating outputs...")
+        y_pred = final_model.predict(X_test); rmse = np.sqrt(mean_squared_error(y_test, y_pred)); mae = mean_absolute_error(y_test, y_pred); r2 = r2_score(y_test, y_pred)
         feedback.pushInfo(f'Final Performance on internal test data: RMSE={rmse:.4f}, MAE={mae:.4f}, R2={r2:.4f}')
 
         os.makedirs(out_folder, exist_ok=True)
-        report_path = os.path.join(out_folder, 'autopredict_rf_report.txt')
-        raster_out = os.path.join(out_folder, 'autopredict_rf_depth.tif')
-        samples_csv = os.path.join(out_folder, 'autopredict_rf_samples.csv')
-        scatter_png = os.path.join(out_folder, 'autopredict_rf_scatter.png')
+        report_path = os.path.join(out_folder, 'autopredict_rf_report.txt'); raster_out = os.path.join(out_folder, 'autopredict_rf_depth.tif')
+        samples_csv = os.path.join(out_folder, 'autopredict_rf_samples.csv'); scatter_png = os.path.join(out_folder, 'autopredict_rf_scatter.png')
 
         with open(report_path, 'w', encoding='utf-8') as f:
-            f.write("--- SDB Auto-Predict: RandomForest - Final Report ---\n")
-            f.write(f"\nSearch iterations performed: {n_iterations}\n")
-            f.write("\n--- Best Hyperparameters Found ---\n")
-            for key, value in best_params.items():
-                f.write(f"{key}: {value}\n")
-            f.write("\n--- Performance on Internal Test Set ---\n")
-            f.write(f"R-squared (R2): {r2:.4f}\n")
-            f.write(f"Root Mean Squared Error (RMSE): {rmse:.4f}\n")
-            f.write(f"Mean Absolute Error (MAE): {mae:.4f}\n")
+            f.write("--- SDB Auto-Predict: RandomForest - Final Report ---\n"); f.write(f"\nSearch iterations performed: {n_iterations}\n")
+            f.write("\n--- Best Hyperparameters Found ---\n"); 
+            for key, value in best_params.items(): f.write(f"{key}: {value}\n")
+            f.write("\n--- Performance on Internal Test Set ---\n"); f.write(f"R-squared (R2): {r2:.4f}\n")
+            f.write(f"Root Mean Squared Error (RMSE): {rmse:.4f}\n"); f.write(f"Mean Absolute Error (MAE): {mae:.4f}\n")
         
-        pd.DataFrame({
-            'x_orig': [sample_rows[i] for i in idx_test][0],
-            'y_orig': [sample_rows[i] for i in idx_test][1],
-            'depth_true': y_test, 'depth_pred': y_pred
-        }).to_csv(samples_csv, index=False)
+        # --- هذا هو الجزء المصحح ---
+        results_df = pd.DataFrame({
+            'x_orig': coords_test['x_orig'].values,
+            'y_orig': coords_test['y_orig'].values,
+            'depth_true': y_test.values,
+            'depth_pred': y_pred
+        })
+        results_df.to_csv(samples_csv, index=False, float_format='%.4f')
         
         plt.figure(figsize=(6,6)); plt.scatter(y_test, y_pred, alpha=0.6)
         mmin, mmax = min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())
