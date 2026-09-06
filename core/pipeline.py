@@ -107,7 +107,7 @@ class LoggingFeedback(QgsProcessingFeedback):
 
 
 
-def generate_3d_seabed_png(raster_path, out_png_path, feedback=None):
+def generate_3d_seabed_png(raster_path, out_png_path, feedback=None, z_scale=0.05):
     if feedback:
         feedback.pushInfo(f"--- Generating high-definition 3D Seabed Plot: {out_png_path}")
     try:
@@ -210,13 +210,16 @@ def generate_3d_seabed_png(raster_path, out_png_path, feedback=None):
                 else:
                     optimal_azim = -55
                 
-                # Balanced Vertical Exaggeration on tight extent
+                # Balanced Vertical Exaggeration scaled by z_scale (default 0.05x)
                 horizontal_extent = max(x_extent, y_extent)
-                target_z_fraction = 0.30
+                base_z_fraction = 0.32
+                target_z_fraction = max(0.005, base_z_fraction * z_scale)
                 ve = (target_z_fraction * horizontal_extent) / z_range
-                ve = min(max(2.0, ve), 25.0)
+                ve = min(max(0.5, ve), 50.0)
             else:
-                ve = 3.0
+                base_z_fraction = 0.32
+                target_z_fraction = max(0.005, base_z_fraction * z_scale)
+                ve = 1.0
                 z_range = 1.0
                 z_min, z_max = 0.0, 1.0
                 horizontal_extent = max(x_extent, y_extent)
@@ -247,7 +250,7 @@ def generate_3d_seabed_png(raster_path, out_png_path, feedback=None):
             except AttributeError:
                 pass
             
-            ve_label = f"VE ≈ {ve:.1f}x (Optimal Front Perspective)"
+            ve_label = f"Z-Scale: {z_scale:.2f}x | VE ≈ {ve:.1f}x (Optimal Front Perspective)"
             ax.set_title("3D Seabed Topography & Bathymetry Model\n", color='white', fontsize=14, fontweight='bold', pad=15)
             ax.text2D(0.5, 0.93, ve_label, transform=ax.transAxes, ha='center', va='top',
                       fontsize=9, color='#60a5fa',
@@ -301,6 +304,42 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
     p4_benchmark_csv = os.path.join(p4_dir, "4_All_Algorithms_Benchmark.csv") if p4_dir else None
 
     
+    # Auto-detect if Spatial CV was actually executed in Phase 03 or Phase 04 from logs
+    import glob
+    if not spatial_cv_p3:
+        for cdir in [p3_dir, out_dir]:
+            if not cdir or not os.path.exists(cdir):
+                continue
+            txt_files = glob.glob(os.path.join(cdir, "*.txt")) + glob.glob(os.path.join(cdir, "*", "*.txt"))
+            for tf in txt_files:
+                try:
+                    with open(tf, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                        if "[Spatial CV]" in content or "geographic clusters" in content:
+                            spatial_cv_p3 = True
+                            break
+                except Exception:
+                    pass
+            if spatial_cv_p3:
+                break
+
+    if not spatial_cv_p4:
+        for cdir in [p4_dir, out_dir]:
+            if not cdir or not os.path.exists(cdir):
+                continue
+            txt_files = glob.glob(os.path.join(cdir, "*.txt")) + glob.glob(os.path.join(cdir, "*", "*.txt"))
+            for tf in txt_files:
+                try:
+                    with open(tf, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                        if "[Spatial CV] Split Phase 04" in content or ("[Spatial CV]" in content and cdir == p4_dir):
+                            spatial_cv_p4 = True
+                            break
+                except Exception:
+                    pass
+            if spatial_cv_p4:
+                break
+
     cv_type_p3 = "Spatial K-Fold Cross Validation" if spatial_cv_p3 else "Standard Random K-Fold Cross Validation"
     cv_type_p4 = "Spatial K-Fold Cross Validation" if spatial_cv_p4 else "Standard Random K-Fold Cross Validation"
     
@@ -336,7 +375,7 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
     plotly_aspect_json = "{}"
     plotly_x_title = "Easting (m)"
     plotly_y_title = "Northing (m)"
-    plotly_camera_json = '{"eye": {"x": 1.25, "y": -1.25, "z": 1.1}}'
+    plotly_camera_json = '{"eye": {"x": 0.91, "y": -1.3, "z": 0.85}}'
     if final_raster_path and os.path.exists(final_raster_path):
         try:
             from rasterio.windows import Window
@@ -387,12 +426,18 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
                 
                 data_float = data.astype(float)
                 data_float[(data_float == nodata) | (data_float < -9000)] = np.nan
-                grid_list = [[(val if np.isfinite(val) else None) for val in row] for row in data_float]
+                
+                # In GIS rasters, row 0 is North (max Northing) and row -1 is South (min Northing = 0).
+                # Plotly surface requires y to be strictly increasing (0 to y_extent) where z[0] corresponds to y[0].
+                # We flip vertically with np.flipud so row 0 is South (y=0) and row -1 is North (y=y_extent),
+                # perfectly matching real-world GIS coordinates and the Matplotlib 3D seabed plot.
+                data_float_flipped = np.flipud(data_float)
+                grid_list = [[(val if np.isfinite(val) else None) for val in row] for row in data_float_flipped]
                 z_data_json = json.dumps(grid_list)
                 
-                # Real-world coordinate arrays
+                # Real-world coordinate arrays (strictly increasing)
                 x_arr = np.linspace(0, x_extent, grid_size).tolist()
-                y_arr = np.linspace(y_extent, 0, grid_size).tolist()
+                y_arr = np.linspace(0, y_extent, grid_size).tolist()
                 x_coords_json = json.dumps([round(v, 1) for v in x_arr])
                 y_coords_json = json.dumps([round(v, 1) for v in y_arr])
                 
@@ -418,11 +463,20 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
                         vec_x = c_sx - c_dx
                         vec_y = -(c_sy - c_dy)
                         slope_angle = np.degrees(np.arctan2(vec_y, vec_x))
-                        cam_ang_rad = np.radians(slope_angle - 180 + 35)
-                        eye_dist = 1.55
-                        eye_x = eye_dist * np.cos(cam_ang_rad)
-                        eye_y = eye_dist * np.sin(cam_ang_rad)
-                        plotly_camera_json = json.dumps({"eye": {"x": round(eye_x, 2), "y": round(eye_y, 2), "z": 1.15}})
+                        optimal_azim = (slope_angle - 180 + 35) % 360 - 180
+                    else:
+                        optimal_azim = -55
+                    
+                    # Convert Matplotlib spherical camera angles (elev=28, azim=optimal_azim)
+                    # directly to Plotly Cartesian eye vector for 100% viewpoint synchronization
+                    elev = 28.0
+                    elev_rad = np.radians(elev)
+                    azim_rad = np.radians(optimal_azim)
+                    eye_dist = 1.80
+                    eye_x = eye_dist * np.cos(elev_rad) * np.cos(azim_rad)
+                    eye_y = eye_dist * np.cos(elev_rad) * np.sin(azim_rad)
+                    eye_z = eye_dist * np.sin(elev_rad)
+                    plotly_camera_json = json.dumps({"eye": {"x": round(eye_x, 2), "y": round(eye_y, 2), "z": round(eye_z, 2)}})
                 
                 max_h = max(x_extent, y_extent)
                 aspect = {"x": round(x_extent / max_h, 4), "y": round(y_extent / max_h, 4), "z": round(target_z_fraction, 4)}
@@ -1427,16 +1481,16 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
                             <div class="flex items-center gap-1 bg-slate-900/90 px-2 py-1 rounded-lg border border-slate-700/60 text-xs shadow-inner">
                                 <span class="text-slate-400 font-medium mr-1 flex items-center gap-1 select-none">
                                     <span>🏔️ Z-Scale:</span>
-                                    <span id="z-scale-display" class="text-sky-400 font-bold min-w-[32px] text-center">1x</span>
+                                    <span id="z-scale-display" class="text-sky-400 font-bold min-w-[32px] text-center">0.05x</span>
                                 </span>
                                 <button type="button" onclick="adjustZScale(-0.25)" title="Decrease Depth Exaggeration" class="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 active:bg-sky-600 text-slate-200 hover:text-white flex items-center justify-center font-bold border border-slate-700 transition-all">−</button>
                                 <button type="button" onclick="adjustZScale(+0.25)" title="Increase Depth Exaggeration" class="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 active:bg-sky-600 text-slate-200 hover:text-white flex items-center justify-center font-bold border border-slate-700 transition-all">+</button>
                                 <div class="h-3.5 w-px bg-slate-700 mx-1"></div>
-                                <button type="button" onclick="setZScale(0.05)" id="z-btn-0-05" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">0.05x</button>
+                                <button type="button" onclick="setZScale(0.05)" id="z-btn-0-05" class="z-preset-btn px-1.5 py-0.5 rounded bg-sky-600 text-white font-semibold shadow-sm transition-all">0.05x</button>
                                 <button type="button" onclick="setZScale(0.1)" id="z-btn-0-1" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">0.1x</button>
                                 <button type="button" onclick="setZScale(0.25)" id="z-btn-0-25" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">0.25x</button>
                                 <button type="button" onclick="setZScale(0.5)" id="z-btn-0-5" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">0.5x</button>
-                                <button type="button" onclick="setZScale(1.0)" id="z-btn-1-0" class="z-preset-btn px-1.5 py-0.5 rounded bg-sky-600 text-white font-semibold shadow-sm transition-all">1x</button>
+                                <button type="button" onclick="setZScale(1.0)" id="z-btn-1-0" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">1x</button>
                                 <button type="button" onclick="setZScale(2.0)" id="z-btn-2-0" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">2x</button>
                                 <button type="button" onclick="setZScale(3.5)" id="z-btn-3-5" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">3.5x</button>
                                 <button type="button" onclick="setZScale(5.0)" id="z-btn-5-0" class="z-preset-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all">5x</button>
@@ -1482,7 +1536,7 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
     <script>
         var defaultCamera = {plotly_camera_json};
         var baseAspect = {{ x: 1, y: 1, z: 0.32 }};
-        var currentZMultiplier = 1.0;
+        var currentZMultiplier = 0.05;
 
         try {{
             var zData = {z_data_json};
@@ -1594,7 +1648,7 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
         }}
 
         function setCameraView(viewType) {{
-            var eye = {{ x: 1.25, y: -1.25, z: 1.15 }};
+            var eye = (defaultCamera && defaultCamera.eye) ? defaultCamera.eye : {{ x: 0.91, y: -1.30, z: 0.85 }};
             if (viewType === 'front' && defaultCamera && defaultCamera.eye) {{
                 eye = defaultCamera.eye;
             }} else if (viewType === 'top') {{
@@ -1602,8 +1656,8 @@ def generate_html_dashboard(out_dir, p3_dir, p4_dir=None, spatial_cv_p3=True, sp
             }} else if (viewType === 'side') {{
                 eye = {{ x: 2.1, y: 0.1, z: 0.35 }};
             }} else if (viewType === 'reset') {{
-                eye = defaultCamera && defaultCamera.eye ? defaultCamera.eye : {{ x: 1.25, y: -1.25, z: 1.15 }};
-                setZScale(1.0);
+                eye = (defaultCamera && defaultCamera.eye) ? defaultCamera.eye : {{ x: 0.91, y: -1.30, z: 0.85 }};
+                setZScale(0.05);
             }}
             Plotly.relayout('seabed-3d-viewer', {{
                 'scene.camera.eye': eye
@@ -2832,7 +2886,7 @@ def generate_pdf_report(out_dir, p3_models, p4_models, has_p4, enable_ransac, pt
     </head>
     <body>
         <div class="header">
-            <h1>BATHYMETRIX-AI V7.8: TECHNICAL VALIDATION REPORT</h1>
+            <h1>BATHYMETRIX-AI V7.9: TECHNICAL VALIDATION REPORT</h1>
             <p>SDB MasterFlow | High-Precision Satellite-Derived Bathymetry Calibration & Validation</p>
         </div>
 
@@ -2907,7 +2961,7 @@ def generate_pdf_report(out_dir, p3_models, p4_models, has_p4, enable_ransac, pt
         {f"<h2>🔄 Phase 04: Depth-Dependent Residual Calibration Leaderboard</h2><table border='1' cellspacing='0' cellpadding='6' bordercolor='#cbd5e1' style='width: 100%; border-collapse: collapse; margin-top: 8pt; margin-bottom: 12pt;'><thead><tr bgcolor='#f1f5f9'><th style='white-space: nowrap;'>Algorithm</th><th style='white-space: nowrap;'>Winner Stability</th><th style='white-space: nowrap;'>SDB Score (0-100)</th><th style='white-space: nowrap;'>R² Accuracy</th><th style='white-space: nowrap;'>RMSE (Vertical Error)</th><th style='white-space: nowrap;'>wMAPE (%)</th><th style='white-space: nowrap;'>Bias (m)</th></tr></thead><tbody>{p4_rows_html}</tbody></table>" if has_p4 else ""}
 
         <div class="footer">
-            Report generated automatically by Bathymetrix-AI V7.8. All rights reserved. &copy; Mohamed Aly Nasef (2026).
+            Report generated automatically by Bathymetrix-AI V7.9. All rights reserved. &copy; Mohamed Aly Nasef (2026).
         </div>
         <div style="page-break-before: always;"></div>
 
@@ -2934,11 +2988,11 @@ def generate_pdf_report(out_dir, p3_models, p4_models, has_p4, enable_ransac, pt
             </tbody>
         </table>
 
-        {f'<div class="footer">Report generated automatically by Bathymetrix-AI V7.8. All rights reserved. &copy; Mohamed Aly Nasef (2026).</div>' if plots_section_html else ""}
+        {f'<div class="footer">Report generated automatically by Bathymetrix-AI V7.9. All rights reserved. &copy; Mohamed Aly Nasef (2026).</div>' if plots_section_html else ""}
         {plots_section_html}
 
         <div class="footer">
-            Report generated automatically by Bathymetrix-AI V7.8. All rights reserved. &copy; Mohamed Aly Nasef (2026).
+            Report generated automatically by Bathymetrix-AI V7.9. All rights reserved. &copy; Mohamed Aly Nasef (2026).
         </div>
     </body>
     </html>

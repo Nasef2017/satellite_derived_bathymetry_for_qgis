@@ -657,168 +657,51 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
             except Exception as e:
                 feedback.pushInfo(f"Warning: Failed to polygonize aggregated mask: {e}")
 
+        en_max_d = self.parameterAsBool(parameters, self.ENABLE_MAX_DEPTH_FILTER, context)
+        apply_slope = self.parameterAsBool(parameters, self.ENABLE_SLOPE_FILTER, context)
+        remove_pos = self.parameterAsBool(parameters, self.REMOVE_POSITIVES, context)
+
         if os.path.exists(aggregated_depth_path):
-            feedback.pushInfo("Applying Post-Aggregation Cleanup (Clamping, Slope Filter, Positive Removal)...")
-            max_depth = self.parameterAsDouble(parameters, self.MAX_DEPTH_THRESHOLD, context)
-            agg_clamped = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_Cleaned.tif")
-            ref_feat = aggregated_mask_path if os.path.exists(aggregated_mask_path) else aggregated_depth_path
-            clean_depth_map(aggregated_depth_path, ref_feat, max_depth, agg_clamped, context, feedback)
-            current_agg = agg_clamped
+            if en_max_d or apply_slope or remove_pos:
+                feedback.pushInfo("Applying Post-Aggregation Cleanup (Clamping, Slope Filter, Positive Removal)...")
+                current_agg = aggregated_depth_path
 
-            if self.parameterAsBool(parameters, self.ENABLE_SLOPE_FILTER, context):
-                slope_threshold = self.parameterAsDouble(parameters, self.SLOPE_THRESHOLD, context)
+                if en_max_d:
+                    max_depth = self.parameterAsDouble(parameters, self.MAX_DEPTH_THRESHOLD, context)
+                    agg_clamped = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_Cleaned.tif")
+                    ref_feat = aggregated_mask_path if os.path.exists(aggregated_mask_path) else aggregated_depth_path
+                    clean_depth_map(current_agg, ref_feat, max_depth, agg_clamped, context, feedback)
+                    current_agg = agg_clamped
 
-                agg_slope = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_SlopeFiltered.tif")
-                current_agg = slope_filter_depth(
-                    current_agg,
-                    slope_threshold=slope_threshold,
-                    out_path=agg_slope,
-                    context=context,
-                    feedback=feedback,
-                )
-
-            if self.parameterAsBool(parameters, self.REMOVE_POSITIVES, context):
-                agg_no_pos = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_NoPositives.tif")
-                remove_positive_pixels(current_agg, agg_no_pos, feedback)
-                current_agg = agg_no_pos
-
-            if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
-                feedback.pushInfo("Clipping Aggregated Depth Map with OSW Polygon...")
-                agg_osw_clipped = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_OSW_Clipped.tif")
-                try:
-                    clip_params = {
-                        "INPUT": current_agg,
-                        "MASK": aggregated_osw_poly,
-                        "NODATA": -9999.0,
-                        "ALPHA_BAND": False,
-                        "CROP_TO_CUTLINE": False,
-                        "KEEP_RESOLUTION": True,
-                        "DATA_TYPE": 0,
-                        "OUTPUT": agg_osw_clipped,
-                    }
-                    if crs_id:
-                        clip_params["SOURCE_CRS"] = crs_id
-                        clip_params["TARGET_CRS"] = crs_id
-                    processing.run(
-                        "gdal:cliprasterbymasklayer",
-                        clip_params,
-                        context=context,
-                        feedback=feedback,
-                        is_child_algorithm=True,
-                    )
-                    if os.path.exists(agg_osw_clipped):
-                        current_agg = agg_osw_clipped
-                        import shutil
-                        shutil.copy2(agg_osw_clipped, aggregated_depth_path)
-                except Exception as e:
-                    feedback.pushInfo(f"Warning: Failed to clip Aggregated Depth with OSW Polygon: {e}")
-
-            aggregated_depth_path = current_agg
-
-        write_qml_style(aggregated_depth_path)
-
-        # 5. Optional Phase 04: Adaptive Refinement (Matching SpatioSpectral Flow)
-        enable_adaptive = self.parameterAsBool(parameters, self.ENABLE_ADAPTIVE, context)
-        p4_final_depth = None
-        p4_dir = None
-
-        if enable_adaptive:
-            adaptive_train_layer = self.parameterAsVectorLayer(
-                parameters, self.INPUT_ADAPTIVE_TRAIN, context
-            )
-            if not adaptive_train_layer:
-                clean_vecs = glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Clean*.gpkg")) + \
-                             glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Points*.gpkg"))
-                if clean_vecs:
-                    adaptive_train_layer = clean_vecs[0]
-                    feedback.pushInfo(f"Using discovered training points from workspace: {adaptive_train_layer}")
-                else:
-                    raise QgsProcessingException(
-                        "Adaptive Points layer (INPUT_ADAPTIVE_TRAIN) is required to run Phase 04."
-                    )
-
-            feedback.pushInfo("Running Phase 04 (Adaptive Refinement)...")
-            p4_dir = os.path.join(out_folder, "Phase_04_Adaptive_Refinement")
-            os.makedirs(p4_dir, exist_ok=True)
-
-            stack_indices = self.parameterAsEnums(
-                parameters, self.STACK_COMPONENTS_P4, context
-            )
-            # Map [0, 1] to 1-based band indexes [1, 2]
-            stack_components = [idx + 1 for idx in stack_indices] if stack_indices else [1, 2]
-
-            p4_thresh_idx = self.parameterAsInt(parameters, self.FEATURE_CORR_THRESHOLD_P4, context)
-            mapped_thresh = max(0, p4_thresh_idx - 1) if p4_thresh_idx > 0 else 0
-
-            p4_params = {
-                "INPUT_GLOBAL_RASTER": aggregated_depth_path,
-                "INPUT_ORIGINAL_FEAT": aggregated_depth_path,
-                "STACK_COMPONENTS": stack_components,
-                "INPUT_MASK": aggregated_mask_path if os.path.exists(aggregated_mask_path) else None,
-                "INPUT_TRAIN": adaptive_train_layer,
-                "FIELD_TRAIN": self.parameterAsString(parameters, self.FIELD_ADAPTIVE_DEPTH, context),
-                "FEATURE_CORR_METHOD": self.parameterAsInt(parameters, self.FEATURE_CORR_METHOD_P4, context),
-                "FEATURE_CORR_THRESHOLD": mapped_thresh,
-                "RESIDUAL_INTERP_METHOD": self.parameterAsInt(parameters, self.RESIDUAL_INTERP_METHOD, context),
-                "KNN_NEIGHBORS": self.parameterAsInt(parameters, self.KNN_NEIGHBORS, context),
-                "MAX_GPR_SAMPLES": self.parameterAsInt(parameters, self.MAX_GPR_SAMPLES, context),
-                "SPATIAL_CV": self.parameterAsBool(parameters, self.SPATIAL_CV_P4, context),
-                "ENABLE_DEPTH_VARIANCE_CORR": self.parameterAsBool(parameters, self.ENABLE_DEPTH_VARIANCE_CORR_P4, context),
-                "ENABLE_SPATIAL_RESIDUAL_CORR": self.parameterAsBool(parameters, self.ENABLE_SPATIAL_RESIDUAL_CORR_P4, context),
-                "OUTPUT_FOLDER": p4_dir,
-            }
-
-            p4 = processing.run(
-                "sdb_tools:sdb_phase4_adaptive",
-                p4_params,
-                is_child_algorithm=True,
-                context=context,
-                feedback=feedback,
-            )
-            raw_p4_depth = p4["OUTPUT_FINAL"]
-
-            if raw_p4_depth and os.path.exists(raw_p4_depth):
-                max_depth = self.parameterAsDouble(parameters, self.MAX_DEPTH_THRESHOLD, context)
-                p4_clamped = os.path.join(p4_dir, "4_Phase04_Depth_Cleaned.tif")
-                clean_depth_map(
-                    raw_p4_depth, aggregated_depth_path, max_depth, p4_clamped, context, feedback
-                )
-                current_p4 = p4_clamped
-
-                if self.parameterAsBool(parameters, self.ENABLE_SLOPE_FILTER, context):
-                    slope_threshold = self.parameterAsDouble(
-                        parameters, self.SLOPE_THRESHOLD, context
-                    )
-
-                    p4_slope = os.path.join(p4_dir, "4_Phase04_Depth_SlopeFiltered.tif")
-                    current_p4 = slope_filter_depth(
-                        current_p4,
+                if apply_slope:
+                    slope_threshold = self.parameterAsDouble(parameters, self.SLOPE_THRESHOLD, context)
+                    agg_slope = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_SlopeFiltered.tif")
+                    current_agg = slope_filter_depth(
+                        current_agg,
                         slope_threshold=slope_threshold,
-                        out_path=p4_slope,
+                        out_path=agg_slope,
                         context=context,
                         feedback=feedback,
                     )
 
-                if self.parameterAsBool(parameters, self.REMOVE_POSITIVES, context):
-                    p4_no_pos = os.path.join(p4_dir, "4_Phase04_Depth_NoPositives.tif")
-                    remove_positive_pixels(current_p4, p4_no_pos, feedback)
-                    p4_final_depth = p4_no_pos
-                else:
-                    p4_final_depth = current_p4
+                if remove_pos:
+                    agg_no_pos = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_NoPositives.tif")
+                    remove_positive_pixels(current_agg, agg_no_pos, feedback)
+                    current_agg = agg_no_pos
 
                 if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
-                    feedback.pushInfo("Clipping Phase 04 Map with Aggregated OSW Polygon...")
-                    p4_osw_clipped = os.path.join(p4_dir, "Phase04_Final_Depth_OSW_Clipped.tif")
+                    feedback.pushInfo("Clipping Aggregated Depth Map with OSW Polygon...")
+                    agg_osw_clipped = os.path.join(out_folder, f"Aggregated_Depth_{safe_agg_method_name}_OSW_Clipped.tif")
                     try:
                         clip_params = {
-                            "INPUT": p4_final_depth,
+                            "INPUT": current_agg,
                             "MASK": aggregated_osw_poly,
                             "NODATA": -9999.0,
                             "ALPHA_BAND": False,
                             "CROP_TO_CUTLINE": False,
                             "KEEP_RESOLUTION": True,
                             "DATA_TYPE": 0,
-                            "OUTPUT": p4_osw_clipped,
+                            "OUTPUT": agg_osw_clipped,
                         }
                         if crs_id:
                             clip_params["SOURCE_CRS"] = crs_id
@@ -830,14 +713,135 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
                             feedback=feedback,
                             is_child_algorithm=True,
                         )
-                        if os.path.exists(p4_osw_clipped):
-                            p4_final_depth = p4_osw_clipped
-                            if raw_p4_depth and os.path.exists(raw_p4_depth) and raw_p4_depth != p4_osw_clipped:
-                                import shutil
-                                shutil.copy2(p4_osw_clipped, raw_p4_depth)
+                        if os.path.exists(agg_osw_clipped):
+                            current_agg = agg_osw_clipped
+                            import shutil
+                            shutil.copy2(agg_osw_clipped, aggregated_depth_path)
                     except Exception as e:
-                        feedback.pushInfo(f"Warning: Failed to clip Phase 04 with OSW Polygon: {e}")
+                        feedback.pushInfo(f"Warning: Failed to clip Aggregated Depth with OSW Polygon: {e}")
 
+                aggregated_depth_path = current_agg
+            else:
+                feedback.pushInfo("Post-aggregation cleanup skipped by user configuration (all cleanup filters unchecked).")
+
+        write_qml_style(aggregated_depth_path)
+
+        # 5. Optional Phase 04: Adaptive Refinement (Matching SpatioSpectral Flow)
+        enable_adaptive = self.parameterAsBool(parameters, self.ENABLE_ADAPTIVE, context)
+        p4_final_depth = None
+        p4_dir = None
+
+        if enable_adaptive:
+            p4_dir = os.path.join(out_folder, "Phase_04_Adaptive_Refinement")
+            os.makedirs(p4_dir, exist_ok=True)
+            feedback.pushInfo("--- Running Downstream Phase 04: Adaptive Retraining ---")
+
+            adaptive_train_layer = self.parameterAsVectorLayer(
+                parameters, self.INPUT_ADAPTIVE_TRAIN, context
+            )
+            adaptive_depth_field = self.parameterAsString(
+                parameters, self.FIELD_ADAPTIVE_DEPTH, context
+            )
+
+            # Discover training points from scene folders if not provided
+            if not adaptive_train_layer:
+                clean_vecs = glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Clean*.gpkg")) + \
+                             glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Clean*.shp"))
+                if clean_vecs:
+                    adaptive_train_layer = clean_vecs[0]
+                    feedback.pushInfo(f"Auto-discovered Phase 04 Training Points: {os.path.basename(adaptive_train_layer)}")
+
+            # Prepare parameters matching SpatioSpectral Flow
+            p4_params = {
+                "INPUT_POINTS": adaptive_train_layer,
+                "FIELD_DEPTH": adaptive_depth_field,
+                "INPUT_DEPTH_MAP": aggregated_depth_path,
+                "OUTPUT_FOLDER": p4_dir,
+                "KNN_NEIGHBORS": self.parameterAsInt(parameters, self.KNN_NEIGHBORS, context),
+                "MAX_GPR_SAMPLES": self.parameterAsInt(parameters, self.MAX_GPR_SAMPLES, context),
+                "SPATIAL_CV": self.parameterAsBool(parameters, self.SPATIAL_CV_P4, context),
+                "ENABLE_DEPTH_VARIANCE_CORR": self.parameterAsBool(parameters, self.ENABLE_DEPTH_VARIANCE_CORR_P4, context),
+                "ENABLE_SPATIAL_RESIDUAL_CORR": self.parameterAsBool(parameters, self.ENABLE_SPATIAL_RESIDUAL_CORR_P4, context),
+                "FEATURE_CORR_METHOD": self.parameterAsEnum(parameters, self.FEATURE_CORR_METHOD_P4, context),
+                "FEATURE_CORR_THRESHOLD": self.parameterAsEnum(parameters, self.FEATURE_CORR_THRESHOLD_P4, context),
+            }
+            if aggregated_mask_path and os.path.exists(aggregated_mask_path):
+                p4_params["INPUT_MASK"] = aggregated_mask_path
+
+            p4 = run_phase04_spatial_retraining(
+                self,
+                p4_params,
+                context=context,
+                feedback=feedback,
+            )
+            raw_p4_depth = p4["OUTPUT_FINAL"]
+
+            if raw_p4_depth and os.path.exists(raw_p4_depth):
+                if en_max_d or apply_slope or remove_pos:
+                    current_p4 = raw_p4_depth
+
+                    if en_max_d:
+                        max_depth = self.parameterAsDouble(parameters, self.MAX_DEPTH_THRESHOLD, context)
+                        p4_clamped = os.path.join(p4_dir, "4_Phase04_Depth_Cleaned.tif")
+                        clean_depth_map(
+                            current_p4, aggregated_depth_path, max_depth, p4_clamped, context, feedback
+                        )
+                        current_p4 = p4_clamped
+
+                    if apply_slope:
+                        slope_threshold = self.parameterAsDouble(
+                            parameters, self.SLOPE_THRESHOLD, context
+                        )
+                        p4_slope = os.path.join(p4_dir, "4_Phase04_Depth_SlopeFiltered.tif")
+                        current_p4 = slope_filter_depth(
+                            current_p4,
+                            slope_threshold=slope_threshold,
+                            out_path=p4_slope,
+                            context=context,
+                            feedback=feedback,
+                        )
+
+                    if remove_pos:
+                        p4_no_pos = os.path.join(p4_dir, "4_Phase04_Depth_NoPositives.tif")
+                        remove_positive_pixels(current_p4, p4_no_pos, feedback)
+                        current_p4 = p4_no_pos
+
+                    if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
+                        feedback.pushInfo("Clipping Phase 04 Map with Aggregated OSW Polygon...")
+                        p4_osw_clipped = os.path.join(p4_dir, "Phase04_Final_Depth_OSW_Clipped.tif")
+                        try:
+                            clip_params = {
+                                "INPUT": current_p4,
+                                "MASK": aggregated_osw_poly,
+                                "NODATA": -9999.0,
+                                "ALPHA_BAND": False,
+                                "CROP_TO_CUTLINE": False,
+                                "KEEP_RESOLUTION": True,
+                                "DATA_TYPE": 0,
+                                "OUTPUT": p4_osw_clipped,
+                            }
+                            if crs_id:
+                                clip_params["SOURCE_CRS"] = crs_id
+                                clip_params["TARGET_CRS"] = crs_id
+                            processing.run(
+                                "gdal:cliprasterbymasklayer",
+                                clip_params,
+                                context=context,
+                                feedback=feedback,
+                                is_child_algorithm=True,
+                            )
+                            if os.path.exists(p4_osw_clipped):
+                                current_p4 = p4_osw_clipped
+                                if raw_p4_depth and os.path.exists(raw_p4_depth) and raw_p4_depth != p4_osw_clipped:
+                                    import shutil
+                                    shutil.copy2(p4_osw_clipped, raw_p4_depth)
+                        except Exception as e:
+                            feedback.pushInfo(f"Warning: Failed to clip Phase 04 with OSW Polygon: {e}")
+
+                    p4_final_depth = current_p4
+                else:
+                    feedback.pushInfo("Phase 04 cleanup skipped by user configuration (all cleanup filters unchecked).")
+                    p4_final_depth = raw_p4_depth
                 write_qml_style(p4_final_depth)
             else:
                 p4_final_depth = raw_p4_depth
@@ -902,7 +906,7 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
                     out_dir=out_folder,
                     p3_dir=out_folder,
                     p4_dir=p4_dir if enable_adaptive else None,
-                    spatial_cv_p3=False,
+                    spatial_cv_p3=None,
                     spatial_cv_p4=self.parameterAsBool(parameters, self.SPATIAL_CV_P4, context),
                     field_depth=self.parameterAsString(parameters, self.FIELD_ADAPTIVE_DEPTH, context) if train_ref else None,
                     feedback=feedback,

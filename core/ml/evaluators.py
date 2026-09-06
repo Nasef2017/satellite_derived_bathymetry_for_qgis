@@ -792,16 +792,19 @@ def run_phase04_spatial_retraining(algorithm, parameters, context, feedback):
         try:
             enable_slope = algorithm.parameterAsBool(parameters, "ENABLE_SLOPE_FILTER", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("ENABLE_SLOPE_FILTER")) else False
             remove_pos = algorithm.parameterAsBool(parameters, "REMOVE_POSITIVES", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("REMOVE_POSITIVES")) else False
-            max_depth = algorithm.parameterAsDouble(parameters, "MAX_DEPTH_THRESHOLD", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("MAX_DEPTH_THRESHOLD")) else -30.0
+            en_max_d = algorithm.parameterAsBool(parameters, "ENABLE_MAX_DEPTH_FILTER", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("ENABLE_MAX_DEPTH_FILTER")) else False
+            max_depth = algorithm.parameterAsDouble(parameters, "MAX_DEPTH_THRESHOLD", context) if (en_max_d and algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("MAX_DEPTH_THRESHOLD")) else -999999.0
             slope_thresh = algorithm.parameterAsDouble(parameters, "SLOPE_THRESHOLD", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("SLOPE_THRESHOLD")) else 35.0
 
-            if (enable_slope or remove_pos) and os.path.exists(p_depth):
+            if (en_max_d or enable_slope or remove_pos) and os.path.exists(p_depth):
                 from Bathymetrix_AI.infrastructure.raster_io import clean_depth_map, slope_filter_depth, remove_positive_pixels
                 append_log("   [Cleanup] Applying post-prediction cleanup filters to Phase 04 depth map...", log_path, feedback)
-                p_cleaned = os.path.join(out_dir, "4_Phase04_Depth_Cleaned.tif")
-                ref_mask = mask_path if mask_path and os.path.exists(mask_path) else global_path
-                clean_depth_map(p_depth, ref_mask, max_depth, p_cleaned, context, feedback)
-                cur_map = p_cleaned
+                cur_map = p_depth
+                if en_max_d:
+                    p_cleaned = os.path.join(out_dir, "4_Phase04_Depth_Cleaned.tif")
+                    ref_mask = mask_path if mask_path and os.path.exists(mask_path) else global_path
+                    clean_depth_map(cur_map, ref_mask, max_depth, p_cleaned, context, feedback)
+                    cur_map = p_cleaned
                 if enable_slope:
                     p_slope = os.path.join(out_dir, "4_Phase04_Depth_SlopeFiltered.tif")
                     cur_map = slope_filter_depth(cur_map, slope_thresh, p_slope, context, feedback)
@@ -810,8 +813,9 @@ def run_phase04_spatial_retraining(algorithm, parameters, context, feedback):
                     remove_positive_pixels(cur_map, p_nopos, feedback)
                     cur_map = p_nopos
                 
-                import shutil
-                shutil.copy2(cur_map, p_depth)
+                if cur_map != p_depth:
+                    import shutil
+                    shutil.copy2(cur_map, p_depth)
                 append_log("   [Cleanup] Phase 04 depth map cleanup completed.", log_path, feedback)
         except Exception as e:
             append_log(f"   [Warning] Phase 04 cleanup failed: {e}", log_path, feedback)
@@ -1355,16 +1359,19 @@ def run_phase04_spatial_retraining(algorithm, parameters, context, feedback):
     try:
         enable_slope = algorithm.parameterAsBool(parameters, "ENABLE_SLOPE_FILTER", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("ENABLE_SLOPE_FILTER")) else False
         remove_pos = algorithm.parameterAsBool(parameters, "REMOVE_POSITIVES", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("REMOVE_POSITIVES")) else False
-        max_depth = algorithm.parameterAsDouble(parameters, "MAX_DEPTH_THRESHOLD", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("MAX_DEPTH_THRESHOLD")) else -30.0
+        en_max_d = algorithm.parameterAsBool(parameters, "ENABLE_MAX_DEPTH_FILTER", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("ENABLE_MAX_DEPTH_FILTER")) else False
+        max_depth = algorithm.parameterAsDouble(parameters, "MAX_DEPTH_THRESHOLD", context) if (en_max_d and algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("MAX_DEPTH_THRESHOLD")) else -999999.0
         slope_thresh = algorithm.parameterAsDouble(parameters, "SLOPE_THRESHOLD", context) if (algorithm and hasattr(algorithm, "parameterDefinition") and algorithm.parameterDefinition("SLOPE_THRESHOLD")) else 35.0
 
-        if (enable_slope or remove_pos) and os.path.exists(p_final):
+        if (en_max_d or enable_slope or remove_pos) and p_final and os.path.exists(p_final):
             from Bathymetrix_AI.infrastructure.raster_io import clean_depth_map, slope_filter_depth, remove_positive_pixels
             append_log("   [Cleanup] Applying post-prediction cleanup filters to Phase 04 depth map...", log_path, feedback)
-            p_cleaned = os.path.join(out_dir, "4_Phase04_Depth_Cleaned.tif")
-            ref_mask = mask_path if mask_path and os.path.exists(mask_path) else global_path
-            clean_depth_map(p_final, ref_mask, max_depth, p_cleaned, context, feedback)
-            cur_map = p_cleaned
+            cur_map = p_final
+            if en_max_d:
+                p_cleaned = os.path.join(out_dir, "4_Phase04_Depth_Cleaned.tif")
+                ref_mask = mask_path if mask_path and os.path.exists(mask_path) else global_path
+                clean_depth_map(cur_map, ref_mask, max_depth, p_cleaned, context, feedback)
+                cur_map = p_cleaned
             if enable_slope:
                 p_slope = os.path.join(out_dir, "4_Phase04_Depth_SlopeFiltered.tif")
                 cur_map = slope_filter_depth(cur_map, slope_thresh, p_slope, context, feedback)
@@ -1373,8 +1380,9 @@ def run_phase04_spatial_retraining(algorithm, parameters, context, feedback):
                 remove_positive_pixels(cur_map, p_nopos, feedback)
                 cur_map = p_nopos
             
-            import shutil
-            shutil.copy2(cur_map, p_final)
+            if cur_map != p_final:
+                import shutil
+                shutil.copy2(cur_map, p_final)
             append_log("   [Cleanup] Phase 04 depth map cleanup completed.", log_path, feedback)
     except Exception as e:
         append_log(f"   [Warning] Phase 04 cleanup failed: {e}", log_path, feedback)

@@ -381,66 +381,73 @@ class SpatioSpectralSDBRunner:
                 append_log(f"  ⚠ WARNING: Failed to polygonize aggregated mask: {e}", log_path, feedback)
 
         if aggregated_depth_path and os.path.exists(aggregated_depth_path):
-            append_log("→ Applying Post-Aggregation Cleanup (Clamping, Slope Filter, Positive Removal)...", log_path, feedback)
             en_max_d = masterflow_params.get("ENABLE_MAX_DEPTH_FILTER", False)
-            max_depth = masterflow_params.get("MAX_DEPTH_THRESHOLD", -30.0) if en_max_d else -999999.0
-            agg_clamped = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_Cleaned.tif")
-            ref_feat = aggregated_mask_path if os.path.exists(aggregated_mask_path) else aggregated_depth_path
-            clean_depth_map(aggregated_depth_path, ref_feat, max_depth, agg_clamped, context, feedback)
-            current_agg = agg_clamped
-
             apply_slope = algorithm.parameterAsBool(masterflow_params, "ENABLE_SLOPE_FILTER", context) if (algorithm and hasattr(algorithm, "parameterAsBool")) else masterflow_params.get("ENABLE_SLOPE_FILTER", True)
-            slope_threshold_val = algorithm.parameterAsDouble(masterflow_params, "SLOPE_THRESHOLD", context) if (algorithm and hasattr(algorithm, "parameterAsDouble")) else masterflow_params.get("SLOPE_THRESHOLD", 35.0)
-
-            if apply_slope:
-                agg_slope = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_SlopeFiltered.tif")
-                current_agg = slope_filter_depth(
-                    current_agg,
-                    slope_threshold=slope_threshold_val,
-                    out_path=agg_slope,
-                    context=context,
-                    feedback=feedback,
-                )
-
             remove_pos = algorithm.parameterAsBool(masterflow_params, "REMOVE_POSITIVES", context) if (algorithm and hasattr(algorithm, "parameterAsBool")) else masterflow_params.get("REMOVE_POSITIVES", True)
-            if remove_pos:
-                agg_no_pos = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_NoPositives.tif")
-                remove_positive_pixels(current_agg, agg_no_pos, feedback)
-                current_agg = agg_no_pos
 
-            if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
-                append_log("→ Clipping Aggregated Depth Map with OSW Polygon...", log_path, feedback)
-                agg_osw_clipped = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_OSW_Clipped.tif")
-                try:
-                    clip_params = {
-                        "INPUT": current_agg,
-                        "MASK": aggregated_osw_poly,
-                        "NODATA": -9999.0,
-                        "ALPHA_BAND": False,
-                        "CROP_TO_CUTLINE": False,
-                        "KEEP_RESOLUTION": True,
-                        "DATA_TYPE": 0,
-                        "OUTPUT": agg_osw_clipped,
-                    }
-                    if crs_id:
-                        clip_params["SOURCE_CRS"] = crs_id
-                        clip_params["TARGET_CRS"] = crs_id
-                    processing.run(
-                        "gdal:cliprasterbymasklayer",
-                        clip_params,
+            if en_max_d or apply_slope or remove_pos:
+                append_log("→ Applying Post-Aggregation Cleanup (Clamping, Slope Filter, Positive Removal)...", log_path, feedback)
+                current_agg = aggregated_depth_path
+
+                if en_max_d:
+                    max_depth = masterflow_params.get("MAX_DEPTH_THRESHOLD", -30.0)
+                    agg_clamped = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_Cleaned.tif")
+                    ref_feat = aggregated_mask_path if os.path.exists(aggregated_mask_path) else aggregated_depth_path
+                    clean_depth_map(current_agg, ref_feat, max_depth, agg_clamped, context, feedback)
+                    current_agg = agg_clamped
+
+                slope_threshold_val = algorithm.parameterAsDouble(masterflow_params, "SLOPE_THRESHOLD", context) if (algorithm and hasattr(algorithm, "parameterAsDouble")) else masterflow_params.get("SLOPE_THRESHOLD", 35.0)
+
+                if apply_slope:
+                    agg_slope = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_SlopeFiltered.tif")
+                    current_agg = slope_filter_depth(
+                        current_agg,
+                        slope_threshold=slope_threshold_val,
+                        out_path=agg_slope,
                         context=context,
                         feedback=feedback,
-                        is_child_algorithm=True,
                     )
-                    if os.path.exists(agg_osw_clipped):
-                        current_agg = agg_osw_clipped
-                        import shutil
-                        shutil.copy2(agg_osw_clipped, aggregated_depth_path)
-                except Exception as e:
-                    append_log(f"  ⚠ WARNING: Failed to clip Aggregated Depth with OSW Polygon: {e}", log_path, feedback)
 
-            aggregated_depth_path = current_agg
-            append_log(f"✓ Post-Aggregation Cleanup finished: {os.path.basename(aggregated_depth_path)}\n", log_path, feedback)
+                if remove_pos:
+                    agg_no_pos = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_NoPositives.tif")
+                    remove_positive_pixels(current_agg, agg_no_pos, feedback)
+                    current_agg = agg_no_pos
+
+                if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
+                    append_log("→ Clipping Aggregated Depth Map with OSW Polygon...", log_path, feedback)
+                    agg_osw_clipped = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}_OSW_Clipped.tif")
+                    try:
+                        clip_params = {
+                            "INPUT": current_agg,
+                            "MASK": aggregated_osw_poly,
+                            "NODATA": -9999.0,
+                            "ALPHA_BAND": False,
+                            "CROP_TO_CUTLINE": False,
+                            "KEEP_RESOLUTION": True,
+                            "DATA_TYPE": 0,
+                            "OUTPUT": agg_osw_clipped,
+                        }
+                        if crs_id:
+                            clip_params["SOURCE_CRS"] = crs_id
+                            clip_params["TARGET_CRS"] = crs_id
+                        processing.run(
+                            "gdal:cliprasterbymasklayer",
+                            clip_params,
+                            context=context,
+                            feedback=feedback,
+                            is_child_algorithm=True,
+                        )
+                        if os.path.exists(agg_osw_clipped):
+                            current_agg = agg_osw_clipped
+                            import shutil
+                            shutil.copy2(agg_osw_clipped, aggregated_depth_path)
+                    except Exception as e:
+                        append_log(f"  ⚠ WARNING: Failed to clip Aggregated Depth with OSW Polygon: {e}", log_path, feedback)
+
+                aggregated_depth_path = current_agg
+                append_log(f"✓ Post-Aggregation Cleanup finished: {os.path.basename(aggregated_depth_path)}\n", log_path, feedback)
+            else:
+                append_log("✓ Post-aggregation cleanup skipped by user configuration (all cleanup filters unchecked).\n", log_path, feedback)
         
         # ---------------------------------------------------------
         # LOOP 2: Phase 4 & 5 (On Aggregated Result)
@@ -511,63 +518,69 @@ class SpatioSpectralSDBRunner:
             # CLEANUP Phase 4 Output
             # ---------------------------------------------------------
             if raw_p4_depth and os.path.exists(raw_p4_depth):
-                max_depth = masterflow_params.get("MAX_DEPTH_THRESHOLD", -30.0) if en_max_d else -999999.0
-                p4_clamped = os.path.join(p4_dir, "4_Phase04_Depth_Cleaned.tif")
-                ref_feat_p4 = aggregated_depth_path
-                clean_depth_map(raw_p4_depth, ref_feat_p4, max_depth, p4_clamped, context, feedback)
-                current_p4 = p4_clamped
+                if en_max_d or apply_slope or remove_pos:
+                    current_p4 = raw_p4_depth
+                    if en_max_d:
+                        max_depth = masterflow_params.get("MAX_DEPTH_THRESHOLD", -30.0)
+                        p4_clamped = os.path.join(p4_dir, "4_Phase04_Depth_Cleaned.tif")
+                        ref_feat_p4 = aggregated_depth_path
+                        clean_depth_map(current_p4, ref_feat_p4, max_depth, p4_clamped, context, feedback)
+                        current_p4 = p4_clamped
 
-                if apply_slope:
-                    p4_slope = os.path.join(p4_dir, "4_Phase04_Depth_SlopeFiltered.tif")
-                    current_p4 = slope_filter_depth(
-                        current_p4,
-                        slope_threshold=slope_threshold_val,
-                        out_path=p4_slope,
-                        context=context,
-                        feedback=feedback,
-                    )
-
-                if remove_pos:
-                    p4_no_pos = os.path.join(p4_dir, "4_Phase04_Depth_NoPositives.tif")
-                    remove_positive_pixels(current_p4, p4_no_pos, feedback)
-                    current_p4 = p4_no_pos
-
-                if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
-                    append_log("  → Clipping Phase 04 Map with Aggregated OSW Polygon...", log_path, feedback)
-                    p4_osw_clipped = os.path.join(p4_dir, "Phase04_Final_Depth_OSW_Clipped.tif")
-                    try:
-                        clip_params = {
-                            "INPUT": current_p4,
-                            "MASK": aggregated_osw_poly,
-                            "NODATA": -9999.0,
-                            "ALPHA_BAND": False,
-                            "CROP_TO_CUTLINE": False,
-                            "KEEP_RESOLUTION": True,
-                            "DATA_TYPE": 0,
-                            "OUTPUT": p4_osw_clipped,
-                        }
-                        if crs_id:
-                            clip_params["SOURCE_CRS"] = crs_id
-                            clip_params["TARGET_CRS"] = crs_id
-                        processing.run(
-                            "gdal:cliprasterbymasklayer",
-                            clip_params,
+                    if apply_slope:
+                        p4_slope = os.path.join(p4_dir, "4_Phase04_Depth_SlopeFiltered.tif")
+                        current_p4 = slope_filter_depth(
+                            current_p4,
+                            slope_threshold=slope_threshold_val,
+                            out_path=p4_slope,
                             context=context,
                             feedback=feedback,
-                            is_child_algorithm=True,
                         )
-                        if os.path.exists(p4_osw_clipped):
-                            current_p4 = p4_osw_clipped
-                    except Exception as e:
-                        append_log(f"  ⚠ WARNING: Failed to clip Phase 04 with OSW Polygon: {e}", log_path, feedback)
 
-                p4_final_depth = current_p4
-                if raw_p4_depth and os.path.exists(raw_p4_depth) and raw_p4_depth != p4_final_depth:
-                    try:
-                        import shutil
-                        shutil.copy2(p4_final_depth, raw_p4_depth)
-                    except Exception:
-                        pass
+                    if remove_pos:
+                        p4_no_pos = os.path.join(p4_dir, "4_Phase04_Depth_NoPositives.tif")
+                        remove_positive_pixels(current_p4, p4_no_pos, feedback)
+                        current_p4 = p4_no_pos
+
+                    if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
+                        append_log("  → Clipping Phase 04 Map with Aggregated OSW Polygon...", log_path, feedback)
+                        p4_osw_clipped = os.path.join(p4_dir, "Phase04_Final_Depth_OSW_Clipped.tif")
+                        try:
+                            clip_params = {
+                                "INPUT": current_p4,
+                                "MASK": aggregated_osw_poly,
+                                "NODATA": -9999.0,
+                                "ALPHA_BAND": False,
+                                "CROP_TO_CUTLINE": False,
+                                "KEEP_RESOLUTION": True,
+                                "DATA_TYPE": 0,
+                                "OUTPUT": p4_osw_clipped,
+                            }
+                            if crs_id:
+                                clip_params["SOURCE_CRS"] = crs_id
+                                clip_params["TARGET_CRS"] = crs_id
+                            processing.run(
+                                "gdal:cliprasterbymasklayer",
+                                clip_params,
+                                context=context,
+                                feedback=feedback,
+                                is_child_algorithm=True,
+                            )
+                            if os.path.exists(p4_osw_clipped):
+                                current_p4 = p4_osw_clipped
+                        except Exception as e:
+                            append_log(f"  ⚠ WARNING: Failed to clip Phase 04 with OSW Polygon: {e}", log_path, feedback)
+
+                    p4_final_depth = current_p4
+                    if raw_p4_depth and os.path.exists(raw_p4_depth) and raw_p4_depth != p4_final_depth:
+                        try:
+                            import shutil
+                            shutil.copy2(p4_final_depth, raw_p4_depth)
+                        except Exception:
+                            pass
+                else:
+                    append_log("  ✓ Phase 04 cleanup skipped by user configuration (all cleanup filters unchecked).", log_path, feedback)
+                    p4_final_depth = raw_p4_depth
                 write_qml_style(p4_final_depth)
             else:
                 p4_final_depth = raw_p4_depth
@@ -623,12 +636,14 @@ class SpatioSpectralSDBRunner:
                 from Bathymetrix_AI.core.pipeline import generate_html_dashboard
             except (ImportError, ValueError):
                 from core.pipeline import generate_html_dashboard
+            sp_cv_p3 = masterflow_params.get("SPATIAL_CV_P3", masterflow_params.get("SPATIAL_CV", True))
+            sp_cv_p4 = masterflow_params.get("SPATIAL_CV_P4", masterflow_params.get("SPATIAL_CV", False))
             generate_html_dashboard(
                 out_dir=self.master_output_folder,
                 p3_dir=self.master_output_folder,
                 p4_dir=p4_dir,
-                spatial_cv_p3=False,
-                spatial_cv_p4=masterflow_params.get("SPATIAL_CV_P4", False),
+                spatial_cv_p3=sp_cv_p3,
+                spatial_cv_p4=sp_cv_p4,
                 field_depth=masterflow_params.get("FIELD_DEPTH"),
                 feedback=feedback,
                 raster_name="SpatioSpectral Aggregated Scenes",
