@@ -1517,6 +1517,7 @@ def run_benchmarking(
         "rmse": winner["RMSE"],
         "wmape": winner["wMAPE"],
         "bias": winner.get("Bias", 0.0),
+        "mae": winner.get("MAE", 0.0),
     }
 
 
@@ -2213,6 +2214,9 @@ def run_phase03_initial_modeling(algorithm, parameters, context, feedback, pre_e
         "OUTPUT_UNCERT_MODEL_PKL": p_uncert_model,
         "BEST_R2": best_algo_data["r2"],
         "BEST_RMSE": best_algo_data["rmse"],
+        "BEST_MAE": best_algo_data.get("mae", 0.0),
+        "BEST_BIAS": best_algo_data.get("bias", 0.0),
+        "BEST_WMAPE": best_algo_data.get("wmape", 0.0),
         "SELECTED_INDICES": selected_indices
     }
 

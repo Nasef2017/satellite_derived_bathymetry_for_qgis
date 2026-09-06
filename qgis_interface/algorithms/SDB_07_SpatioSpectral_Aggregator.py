@@ -25,6 +25,8 @@ try:
     from Bathymetrix_AI.core.spectral.aggregation import (
         spatiospectral_aggregate,
         spatiospectral_mask_intersection,
+        AGGREGATION_METHODS,
+        compute_r2_rmse_weight,
     )
     from Bathymetrix_AI.infrastructure.raster_io import (
         clean_depth_map,
@@ -41,6 +43,8 @@ except (ImportError, ValueError):
     from core.spectral.aggregation import (
         spatiospectral_aggregate,
         spatiospectral_mask_intersection,
+        AGGREGATION_METHODS,
+        compute_r2_rmse_weight,
     )
     from infrastructure.raster_io import (
         clean_depth_map,
@@ -120,15 +124,7 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
     SLOPE_THRESHOLD = "SLOPE_THRESHOLD"
 
     # Dropdown Options (Matching SpatioSpectral Flow)
-    AGGREGATION_METHODS = [
-        "Median",
-        "Mean",
-        "Max (Deepest)",
-        "Min (Shallowest)",
-        "Weighted Median (R2/RMSE)",
-        "Weighted Mean (R2/RMSE)",
-        "Select Best Scene (High R2 / Low RMSE)",
-    ]
+    AGGREGATION_METHODS = AGGREGATION_METHODS
 
     FEATURE_CORR_THRESHOLDS_P4 = [
         "Use Phase 03 (-1.0)",
@@ -165,6 +161,7 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
                 defaultValue=4,  # Weighted Median default
             )
         )
+
         self.addParameter(
             QgsProcessingParameterFolderDestination(
                 self.OUTPUT_FOLDER, "📁 [0.3] Output Folder"
@@ -442,41 +439,68 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
         workspace = self.parameterAsString(parameters, self.INPUT_WORKSPACE, context)
         if workspace and os.path.isfile(workspace):
             workspace = os.path.dirname(workspace)
-        agg_method_idx = self.parameterAsInt(
-            parameters, self.SPATIOSPECTRAL_AGGREGATION, context
-        )
-        agg_method = self.AGGREGATION_METHODS[agg_method_idx]
+        try:
+            agg_method_idx = self.parameterAsInt(
+                parameters, self.SPATIOSPECTRAL_AGGREGATION, context
+            )
+            agg_method = self.AGGREGATION_METHODS[agg_method_idx] if 0 <= agg_method_idx < len(self.AGGREGATION_METHODS) else self.AGGREGATION_METHODS[4]
+        except Exception:
+            raw_val = parameters.get(self.SPATIOSPECTRAL_AGGREGATION, 4)
+            if isinstance(raw_val, str) and raw_val in self.AGGREGATION_METHODS:
+                agg_method = raw_val
+            else:
+                try:
+                    idx = int(raw_val)
+                    agg_method = self.AGGREGATION_METHODS[idx] if 0 <= idx < len(self.AGGREGATION_METHODS) else self.AGGREGATION_METHODS[4]
+                except Exception:
+                    agg_method = self.AGGREGATION_METHODS[4]
 
         if not os.path.isdir(workspace):
             raise QgsProcessingException(f"Workspace directory not found: {workspace}")
 
-        # 1. Discover depth maps and masks
-        scene_folders = sorted([f for f in os.listdir(workspace) if f.startswith("Scene_")])
+        # 1. Discover depth maps, masks, and scene metrics using natural numerical sorting
+        import re
+        def scene_sort_key(folder_name):
+            match = re.search(r"Scene_?(\d+)", folder_name, re.IGNORECASE)
+            return int(match.group(1)) if match else 999999
+
+        scene_folders = sorted(
+            [f for f in os.listdir(workspace) if f.startswith("Scene_")],
+            key=scene_sort_key
+        )
         if not scene_folders:
             raise QgsProcessingException(f"No Scene_* folders found in workspace: {workspace}")
 
+        feedback.pushInfo(f"Found {len(scene_folders)} scenes in workspace.")
+
         p3_depth_maps = []
+        valid_scenes = []
         p1_masks = []
         p1_osw_polys = []
-
-        feedback.pushInfo(f"Found {len(scene_folders)} scenes in workspace.")
 
         for scene_folder in scene_folders:
             scene_path = os.path.join(workspace, scene_folder)
 
-            # Find Depth Map
+            # Find Depth Map with prioritized cleaned candidates
             p3_dir = os.path.join(scene_path, "Phase_03_Initial_Modeling")
-            depth_map = os.path.join(p3_dir, "3_Initial_Global_Depth_NoPositives.tif")
-            if not os.path.exists(depth_map):
-                depth_map = os.path.join(p3_dir, "3_Initial_Global_Depth_Cleaned.tif")
-            if not os.path.exists(depth_map):
-                depth_map = os.path.join(p3_dir, "3_Initial_Global_Depth.tif")
+            depth_candidates = [
+                os.path.join(p3_dir, "3_Initial_Global_Depth_OSW_Clipped.tif"),
+                os.path.join(p3_dir, "3_Initial_Global_Depth_NoPositives.tif"),
+                os.path.join(p3_dir, "3_Initial_Global_Depth_SlopeFiltered.tif"),
+                os.path.join(p3_dir, "3_Initial_Global_Depth_Cleaned.tif"),
+                os.path.join(p3_dir, "3_Initial_Global_Depth.tif"),
+            ]
+            depth_map = None
+            for cand in depth_candidates:
+                if os.path.exists(cand):
+                    depth_map = cand
+                    break
 
-            if not os.path.exists(depth_map):
-                feedback.pushInfo(f"Missing depth map for {scene_folder}. Skipping.")
-                continue
-
-            p3_depth_maps.append(depth_map)
+            if depth_map:
+                p3_depth_maps.append(depth_map)
+                valid_scenes.append(scene_folder)
+            else:
+                feedback.pushInfo(f"Missing depth map for {scene_folder}.")
 
             # Find Mask & OSW Polygon
             p1_dir = os.path.join(scene_path, "Phase_01_Preprocessing")
@@ -500,49 +524,34 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
         if not p3_depth_maps:
             raise QgsProcessingException("No valid Phase 03 depth maps found in the workspace.")
 
-        # 2. Extract Weights if needed
+        # Extract weights from log aligned strictly with valid scenes
         p3_weights = []
         if "Weighted" in agg_method or "Best Scene" in agg_method:
-            log_path = os.path.join(workspace, "SpatioSpectral_Master_Log.txt")
-            if not os.path.exists(log_path):
-                log_path = os.path.join(workspace, "SpatioSpectral_Flow_Log.txt")  # Fallback
+            log_files = glob.glob(os.path.join(workspace, "*Log*.txt"))
+            log_content = ""
+            if log_files:
+                try:
+                    with open(log_files[0], "r", encoding="utf-8") as f:
+                        log_content = f.read()
+                except Exception:
+                    pass
 
-            if not os.path.exists(log_path):
-                raise QgsProcessingException(
-                    f"Log file not found in {workspace}. Cannot extract weights for {agg_method}."
-                )
+            weights_in_log = []
+            if log_content:
+                weights_in_log = re.findall(r"Weight:\s*([0-9.]+)", log_content)
 
-            with open(log_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            for scene_folder in valid_scenes:
+                scene_idx = scene_folders.index(scene_folder)
+                w = 1.0
+                if len(weights_in_log) > scene_idx:
+                    try:
+                        w = float(weights_in_log[scene_idx])
+                    except ValueError:
+                        w = 1.0
+                p3_weights.append(w)
+            feedback.pushInfo(f"Extracted Weights for {len(p3_weights)} valid scenes: {p3_weights}")
 
-            if "Started: " in content:
-                content = content.split("Started: ")[-1]
-
-            weights = re.findall(r"Weight:\s*([0-9.]+)", content)
-            if len(weights) >= len(p3_depth_maps):
-                weights = weights[: len(p3_depth_maps)]
-
-            if not weights:
-                r2s = re.findall(r"'BEST_R2':\s*(?:np\.float64\()?([0-9.]+)", content)
-                rmses = re.findall(r"'BEST_RMSE':\s*(?:np\.float64\()?([0-9.]+)", content)
-
-                if len(r2s) >= len(p3_depth_maps) and len(rmses) >= len(p3_depth_maps):
-                    weights = []
-                    for i in range(len(p3_depth_maps)):
-                        r2 = float(r2s[i])
-                        rmse = float(rmses[i])
-                        w = max(0.001, r2) / (rmse + 0.001)
-                        weights.append(str(w))
-
-            if len(weights) != len(p3_depth_maps):
-                raise QgsProcessingException(
-                    f"Extracted {len(weights)} weights from log, but found {len(p3_depth_maps)} depth maps. Mismatch!"
-                )
-
-            p3_weights = [float(w) for w in weights]
-            feedback.pushInfo(f"Extracted/Calculated Weights: {p3_weights}")
-
-        # 3. Output directory
+        # 2. Output directory
         out_folder = self.parameterAsString(parameters, self.OUTPUT_FOLDER, context)
         if not out_folder:
             out_folder = os.path.join(workspace, "Aggregated_Results")
@@ -558,12 +567,12 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
         )
         aggregated_mask_path = os.path.join(out_folder, "Aggregated_Intersection_Mask.tif")
 
-        # 4. Run Aggregation
-        if "Best Scene" in agg_method:
-            best_idx = p3_weights.index(max(p3_weights))
+        # 3. Run Aggregation
+        if agg_method == "Select Best Scene (High R2 / Low RMSE)":
+            best_idx = p3_weights.index(max(p3_weights)) if p3_weights else 0
             best_depth_map = p3_depth_maps[best_idx]
             feedback.pushInfo(
-                f"Selecting Scene {best_idx+1} as the best scene based on R2/RMSE weight ({p3_weights[best_idx]:.4f})."
+                f"Selecting Scene {best_idx+1} as the best scene based on R2/RMSE weight ({p3_weights[best_idx] if p3_weights else 1.0})."
             )
 
             import shutil
@@ -575,7 +584,7 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
         else:
             feedback.pushInfo(f"Aggregating using method: {agg_method}...")
             agg_kwargs = {"method": agg_method, "feedback": feedback}
-            if "Weighted" in agg_method:
+            if "Weighted" in agg_method and p3_weights:
                 agg_kwargs["weights"] = p3_weights
 
             spatiospectral_aggregate(p3_depth_maps, aggregated_depth_path, **agg_kwargs)
@@ -718,9 +727,15 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
                 parameters, self.INPUT_ADAPTIVE_TRAIN, context
             )
             if not adaptive_train_layer:
-                raise QgsProcessingException(
-                    "Adaptive Points layer (INPUT_ADAPTIVE_TRAIN) is required to run Phase 04."
-                )
+                clean_vecs = glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Clean*.gpkg")) + \
+                             glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Points*.gpkg"))
+                if clean_vecs:
+                    adaptive_train_layer = clean_vecs[0]
+                    feedback.pushInfo(f"Using discovered training points from workspace: {adaptive_train_layer}")
+                else:
+                    raise QgsProcessingException(
+                        "Adaptive Points layer (INPUT_ADAPTIVE_TRAIN) is required to run Phase 04."
+                    )
 
             feedback.pushInfo("Running Phase 04 (Adaptive Refinement)...")
             p4_dir = os.path.join(out_folder, "Phase_04_Adaptive_Refinement")
@@ -841,6 +856,13 @@ class PostSpatioSpectralAggregator(QgsProcessingAlgorithm):
             train_ref = self.parameterAsVectorLayer(
                 parameters, self.INPUT_ADAPTIVE_TRAIN, context
             )
+            if not train_ref:
+                clean_vecs = glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Clean*.gpkg")) + \
+                             glob.glob(os.path.join(workspace, "Scene_*", "Phase_02_Filtering", "*Points*.gpkg"))
+                if clean_vecs:
+                    train_ref = clean_vecs[0]
+                elif test_layer:
+                    train_ref = test_layer
 
             feedback.pushInfo("Running Phase 05 (Validation & Reporting)...")
             p5_dir = os.path.join(out_folder, "Phase_05_Scientific_Validation")

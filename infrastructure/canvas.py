@@ -1,11 +1,21 @@
 # infrastructure/canvas.py
 import os
-from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer, QgsProcessingContext
-from .raster_io import StylePostProcessor, write_qml_style
+try:
+    from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer, QgsProcessingContext
+except ImportError:
+    QgsProject = None
+    QgsRasterLayer = None
+    QgsVectorLayer = None
+    QgsProcessingContext = None
+
+try:
+    from .raster_io import StylePostProcessor, write_qml_style
+except (ImportError, ValueError):
+    from infrastructure.raster_io import StylePostProcessor, write_qml_style
 
 
 def add_raster_to_canvas(path, layer_name, context=None, style_path=None):
-    if not path or not os.path.exists(path):
+    if not path or not os.path.exists(path) or QgsProject is None:
         return
 
     if not style_path:

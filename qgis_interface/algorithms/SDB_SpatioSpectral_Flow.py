@@ -18,9 +18,16 @@ from qgis.core import (
     QgsProcessingFeedback
 )
 
-from .SDB_MasterFlow import SDBMasterOrchestrator
-from ...core.spectral.spatiospectral_runner import SpatioSpectralSDBRunner
-from ...infrastructure.logging import append_log
+try:
+    from .SDB_MasterFlow import SDBMasterOrchestrator
+    from ...core.spectral.spatiospectral_runner import SpatioSpectralSDBRunner
+    from ...core.spectral.aggregation import AGGREGATION_METHODS
+    from ...infrastructure.logging import append_log, log_module_completion, format_clickable_url
+except (ImportError, ValueError):
+    from qgis_interface.algorithms.SDB_MasterFlow import SDBMasterOrchestrator
+    from core.spectral.spatiospectral_runner import SpatioSpectralSDBRunner
+    from core.spectral.aggregation import AGGREGATION_METHODS
+    from infrastructure.logging import append_log, log_module_completion, format_clickable_url
 
 warnings.filterwarnings("ignore")
 
@@ -102,10 +109,11 @@ class SDBSpatioSpectralFlow(SDBMasterOrchestrator):
             QgsProcessingParameterEnum(
                 self.SPATIOSPECTRAL_AGGREGATION,
                 "🧩 [0.2] SpatioSpectral Aggregation Method",
-                options=["Median", "Mean", "Max (Deepest)", "Min (Shallowest)", "Weighted Median (R2/RMSE)", "Weighted Mean (R2/RMSE)", "Select Best Scene (High R2 / Low RMSE)"],
+                options=AGGREGATION_METHODS,
                 defaultValue=4,
             )
         )
+
         self.addParameter(
             QgsProcessingParameterFolderDestination(self.OUTPUT_MASTER_FOLDER, "📁 [0.3] Master Output Workspace")
         )
@@ -219,6 +227,14 @@ class SDBSpatioSpectralFlow(SDBMasterOrchestrator):
                 self.APPLY_DEEPWATER,
                 "🌊 [1.5] Apply Deep Water Filter",
                 defaultValue=True,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.DEEPWATER_METHOD,
+                "🌊 [1.5] Deep Water Definition Method",
+                options=self.OSW_METHODS_NAMES,
+                defaultValue=2,
             )
         )
         self.addParameter(
@@ -839,4 +855,26 @@ class SDBSpatioSpectralFlow(SDBMasterOrchestrator):
         runner = SpatioSpectralSDBRunner(out_folder)
         results = runner.run_spatiospectral_flow(image_root, masterflow_params, self, context, custom_feedback)
         
+        if not results:
+            results = {}
+        results[self.OUTPUT_MASTER_FOLDER] = out_folder
+        results["OUTPUT_FOLDER"] = out_folder
+
+        primary_files = {
+            "Aggregated Depth Map": results.get("AGGREGATED_DEPTH"),
+            "Refined Depth Map": results.get("FINAL_REFINED_DEPTH"),
+            "HTML Dashboard": os.path.join(out_folder, "SDB_Validation_Dashboard.html") if os.path.exists(os.path.join(out_folder, "SDB_Validation_Dashboard.html")) else None,
+            "Master Execution Log": log_file_path,
+        }
+        try:
+            log_module_completion(
+                module_title="SDB SpatioSpectral Masterflow (Multi-Scene)",
+                out_dir=out_folder,
+                primary_files=primary_files,
+                log_path=log_file_path,
+                feedback=feedback,
+            )
+        except Exception:
+            pass
+
         return results

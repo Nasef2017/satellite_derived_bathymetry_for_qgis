@@ -2,7 +2,7 @@
 name=Bathymetrix-AI
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
-version=7.7
+version=7.8
 author=Mohamed Aly Nasef
 email=Eng.m.nasef2017@gmail.com
 description=A professional QGIS research toolkit for Satellite-Derived Bathymetry (SDB), integrating multispectral imagery with ICESat-2 LiDAR via Auto-ML, SpatioSpectral aggregation, SpatioTemporal modeling, Adaptive Refinement, and Coastal Dynamics.
@@ -100,4 +100,4 @@ tracker=https://github.com/Nasef2017/Bathymetrix-AI/issues
 icon=icon.png
 tags=sdb,bathymetry,machine learning,icesat-2,ransac,spatial correction,remote sensing,hydrography,satellite imagery,python,coastal dynamics,volumetric change,quantile regression,spatiotemporal,spatiospectral,iho-s44
 category=Raster
-changelog=v7.7: (1) Unified Visual Interface Dividers: Implemented elegant Unicode visual dividers across all Masterflows and single flows for intuitive, professional workflow navigation.
+changelog=v7.8: fix bug in SpatioSpectral (Resolved weight-dimension mismatch in weighted aggregation, unified Phase 04 post-aggregation cleanup with slope filtering, depth clamping, and positive removal, fixed non-existent mask parameter passing, and stabilized natural sorting of multi-scene directories).

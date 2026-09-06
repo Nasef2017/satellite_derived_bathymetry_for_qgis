@@ -185,8 +185,10 @@ def slope_filter_depth(
 
 def get_raster_min_max(raster_path):
     """
-    Robust calculation of raster min/max depths for bathymetry color ramp scaling.
-    Excludes nodata, NaNs, and extreme outliers.
+    Exact calculation of raster min/max depths for bathymetry color ramp scaling.
+    Excludes nodata, NaNs, and infinite values, ensuring min and max truly represent
+    the exact physical bounds of the bathymetric data without any artificial cutoffs
+    or additions.
     """
     import os
     if not raster_path or not os.path.exists(raster_path):
@@ -195,7 +197,13 @@ def get_raster_min_max(raster_path):
         with rasterio.open(raster_path) as src:
             data = src.read(1)
             nodata = src.nodata if src.nodata is not None else -9999.0
-            valid = (data != nodata) & (data > -9000) & (data < 15000) & (~np.isnan(data))
+            valid = (
+                (data != nodata)
+                & (data > -9000)
+                & (data < 15000)
+                & (~np.isnan(data))
+                & (~np.isinf(data))
+            )
             if not np.any(valid):
                 return -30.0, 0.0
             v_data = data[valid]
@@ -204,24 +212,18 @@ def get_raster_min_max(raster_path):
             if median_val < 0:
                 # Negative depth convention (e.g. -35m to 0m)
                 neg_vals = v_data[v_data <= 0]
-                if len(neg_vals) > 0:
-                    p_min = float(np.percentile(neg_vals, 0.5))
-                    p_max = float(np.percentile(neg_vals, 99.5))
-                    if p_max > 0:
-                        p_max = 0.0
-                else:
-                    p_min, p_max = float(np.min(v_data)), float(np.max(v_data))
+                target_vals = neg_vals if len(neg_vals) > 0 else v_data
             else:
                 # Positive depth convention (e.g. 0m to 35m)
                 pos_vals = v_data[v_data >= 0]
-                if len(pos_vals) > 0:
-                    p_min = float(np.percentile(pos_vals, 0.5))
-                    p_max = float(np.percentile(pos_vals, 99.5))
-                else:
-                    p_min, p_max = float(np.min(v_data)), float(np.max(v_data))
+                target_vals = pos_vals if len(pos_vals) > 0 else v_data
+            
+            # Exact representative min and max (without percentile cutoffs or artificial bounds)
+            p_min = round(float(np.min(target_vals)), 2)
+            p_max = round(float(np.max(target_vals)), 2)
             
             if p_min == p_max:
-                p_min, p_max = p_min - 5.0, p_max + 1.0
+                p_min, p_max = p_min - 1.0, p_max + 1.0
             
             return p_min, p_max
     except Exception:
@@ -231,7 +233,8 @@ def get_raster_min_max(raster_path):
 def write_qml_style(tif_path):
     """
     Writes a standardized QGIS Layer Style (.qml) alongside the given GeoTIFF raster.
-    Creates a unified Single-Band Pseudocolor ocean bathymetry theme (Deep Navy -> Shallow Surf/White).
+    Creates a unified Single-Band Pseudocolor ocean bathymetry theme (Deep Navy -> Shallow Surf/White)
+    with exact Min/Max representation without any cuts or artificial padding.
     """
     import os
     if not tif_path or not os.path.exists(tif_path):
@@ -258,7 +261,7 @@ def write_qml_style(tif_path):
         colors = list(reversed(palette))
         items_xml = []
         for i in range(9):
-            val = min_d + step * i if i < 8 else max_d
+            val = round(min_d + step * i, 2) if (0 < i < 8) else (min_d if i == 0 else max_d)
             lbl = f"{val:.2f} m"
             if i == 0:
                 lbl += " (Shallow)"
@@ -270,7 +273,7 @@ def write_qml_style(tif_path):
         colors = palette
         items_xml = []
         for i in range(9):
-            val = min_d + step * i if i < 8 else max_d
+            val = round(min_d + step * i, 2) if (0 < i < 8) else (min_d if i == 0 else max_d)
             lbl = f"{val:.2f} m"
             if i == 0:
                 lbl += " (Deep)"
@@ -289,15 +292,15 @@ def write_qml_style(tif_path):
     <rasterrenderer opacity="1" classificationMin="{min_d}" nodataColor="" alphaBand="-1" classificationMax="{max_d}" band="1" type="singlebandpseudocolor">
       <rasterTransparency/>
       <minMaxOrigin>
-        <limits>None</limits>
+        <limits>MinMax</limits>
         <extent>WholeRaster</extent>
-        <statAccuracy>Estimated</statAccuracy>
-        <cumulativeCutLower>0.02</cumulativeCutLower>
-        <cumulativeCutUpper>0.98</cumulativeCutUpper>
+        <statAccuracy>Exact</statAccuracy>
+        <cumulativeCutLower>0</cumulativeCutLower>
+        <cumulativeCutUpper>1</cumulativeCutUpper>
         <stdDevFactor>2</stdDevFactor>
       </minMaxOrigin>
       <rastershader>
-        <colorrampshader classificationMode="1" colorRampType="INTERPOLATED" labelPrecision="4" clip="0">
+        <colorrampshader classificationMode="1" colorRampType="INTERPOLATED" labelPrecision="2" clip="0">
 {items_block}
         </colorrampshader>
       </rastershader>

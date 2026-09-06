@@ -35,6 +35,7 @@ class SDBModule03(QgsProcessingAlgorithm):
     LOG_FILE = "LOG_FILE"
     OUTPUT_DEPTH_MAP = "OUTPUT_DEPTH_MAP"
     BEST_R2 = "BEST_R2"
+    BEST_RMSE = "BEST_RMSE"
 
     TRAIN_TEST_SPLIT = "TRAIN_TEST_SPLIT"
     RANDOM_STATE = "RANDOM_STATE"
@@ -402,6 +403,9 @@ class SDBModule03(QgsProcessingAlgorithm):
         )
         self.addOutput(
             QgsProcessingOutputNumber(self.BEST_R2, "Best R2 Score")
+        )
+        self.addOutput(
+            QgsProcessingOutputNumber(self.BEST_RMSE, "Best RMSE (m)")
         )
 
 

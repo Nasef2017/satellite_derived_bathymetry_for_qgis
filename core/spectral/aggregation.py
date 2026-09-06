@@ -6,6 +6,25 @@ from rasterio.windows import Window
 from rasterio.vrt import WarpedVRT
 from rasterio.enums import Resampling
 
+# --------------------------------------------------------------------------
+# SPATIOSPECTRAL AGGREGATION OPTIONS REGISTRY
+# --------------------------------------------------------------------------
+AGGREGATION_METHODS = [
+    "Median",
+    "Mean",
+    "Max (Deepest)",
+    "Min (Shallowest)",
+    "Weighted Median (R2/RMSE)",
+    "Weighted Mean (R2/RMSE)",
+    "Select Best Scene (High R2 / Low RMSE)",
+]
+
+
+def compute_r2_rmse_weight(r2, rmse):
+    """Classic weight based on R2 and RMSE."""
+    return max(0.001, float(r2)) / (max(0.001, float(rmse)) + 0.001)
+
+
 def spatiospectral_aggregate(input_rasters, output_path, method="Median", weights=None, feedback=None):
     """
     Aggregates multiple raster files pixel-by-pixel using a chunked windowed approach
@@ -15,7 +34,7 @@ def spatiospectral_aggregate(input_rasters, output_path, method="Median", weight
     Args:
         input_rasters (list of str): List of paths to input raster files.
         output_path (str): Path to save the aggregated raster.
-        method (str): Aggregation method ("Median", "Mean", "Max", "Min", "Weighted Median (R2/RMSE)", "Weighted Mean (R2/RMSE)").
+        method (str): Aggregation method ("Median", "Mean", "Max (Deepest)", "Min (Shallowest)", "Weighted Median (R2/RMSE)", "Weighted Mean (R2/RMSE)").
         weights (list of float, optional): Weights corresponding to each input raster.
         feedback (QgsProcessingFeedback, optional): Feedback object for logging.
     """
@@ -82,7 +101,11 @@ def spatiospectral_aggregate(input_rasters, output_path, method="Median", weight
                             
                             data = data.astype(np.float32)
                             if nodata_val is not None:
-                                data[data == nodata_val] = np.nan
+                                if np.isnan(nodata_val):
+                                    data[np.isnan(data)] = np.nan
+                                else:
+                                    data[np.isclose(data, nodata_val, atol=1e-3) | (data == nodata_val)] = np.nan
+                            data[data <= -9000.0] = np.nan
                                 
                             block_stack.append(data)
                     
@@ -118,16 +141,16 @@ def spatiospectral_aggregate(input_rasters, output_path, method="Median", weight
                             agg_data = np.take_along_axis(stacked_array, np.expand_dims(idx, axis=0), axis=0).squeeze(axis=0)
                             all_nan = ~np.any(valid_mask, axis=0)
                             agg_data[all_nan] = np.nan
-                        elif method == "Weighted Mean (R2/RMSE)" and weights is not None:
-                            w = np.array(weights)
+                        elif method == "Weighted Mean (R2/RMSE)" and weights is not None and len(weights) == stacked_array.shape[0]:
+                            w = np.array(weights, dtype=np.float32)
                             mask = ~np.isnan(stacked_array)
                             w_expanded = np.broadcast_to(w[:, None, None], stacked_array.shape)
                             w_masked = np.where(mask, w_expanded, 0.0)
                             weighted_sum = np.nansum(stacked_array * w_masked, axis=0)
                             sum_weights = np.sum(w_masked, axis=0)
                             agg_data = np.divide(weighted_sum, sum_weights, out=np.full_like(weighted_sum, np.nan), where=sum_weights > 0)
-                        elif method == "Weighted Median (R2/RMSE)" and weights is not None:
-                            w = np.array(weights)
+                        elif method == "Weighted Median (R2/RMSE)" and weights is not None and len(weights) == stacked_array.shape[0]:
+                            w = np.array(weights, dtype=np.float32)
                             mask = ~np.isnan(stacked_array)
                             w_expanded = np.broadcast_to(w[:, None, None], stacked_array.shape)
                             w_masked = np.where(mask, w_expanded, 0.0)

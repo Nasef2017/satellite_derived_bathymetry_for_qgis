@@ -9,13 +9,25 @@ except ImportError:
     processing = None
 
 try:
-    from Bathymetrix_AI.infrastructure.logging import append_log
-    from Bathymetrix_AI.core.spectral.aggregation import spatiospectral_aggregate, spatiospectral_mask_intersection
-    from Bathymetrix_AI.infrastructure.raster_io import clean_depth_map, remove_positive_pixels, slope_filter_depth
+    from Bathymetrix_AI.infrastructure.logging import append_log, log_module_completion, format_clickable_url
+    from Bathymetrix_AI.core.spectral.aggregation import (
+        spatiospectral_aggregate,
+        spatiospectral_mask_intersection,
+        AGGREGATION_METHODS,
+        compute_r2_rmse_weight,
+    )
+    from Bathymetrix_AI.infrastructure.raster_io import clean_depth_map, remove_positive_pixels, slope_filter_depth, write_qml_style, get_raster_min_max
+    from Bathymetrix_AI.infrastructure.canvas import add_raster_to_canvas
 except (ImportError, ValueError):
-    from infrastructure.logging import append_log
-    from core.spectral.aggregation import spatiospectral_aggregate, spatiospectral_mask_intersection
-    from infrastructure.raster_io import clean_depth_map, remove_positive_pixels, slope_filter_depth
+    from infrastructure.logging import append_log, log_module_completion, format_clickable_url
+    from core.spectral.aggregation import (
+        spatiospectral_aggregate,
+        spatiospectral_mask_intersection,
+        AGGREGATION_METHODS,
+        compute_r2_rmse_weight,
+    )
+    from infrastructure.raster_io import clean_depth_map, remove_positive_pixels, slope_filter_depth, write_qml_style, get_raster_min_max
+    from infrastructure.canvas import add_raster_to_canvas
 
 
 class SpatioSpectralSDBRunner:
@@ -92,7 +104,7 @@ class SpatioSpectralSDBRunner:
             append_log("  ──────────────────────────────────────────────────────────", log_path, feedback)
             if feedback.isCanceled(): return {}
             
-            scene_out_dir = os.path.join(self.master_output_folder, f"Scene_{i+1}_{scene_name}")
+            scene_out_dir = os.path.join(self.master_output_folder, f"Scene_{i+1:02d}_{scene_name}")
             p1_dir = os.path.join(scene_out_dir, "Phase_01_Preprocessing")
             p2_dir = os.path.join(scene_out_dir, "Phase_02_Filtering")
             p3_dir = os.path.join(scene_out_dir, "Phase_03_Initial_Modeling")
@@ -163,10 +175,10 @@ class SpatioSpectralSDBRunner:
             
             best_depth_path = p3.get("OUTPUT_DEPTH_MAP")
             
-            # Extract R2 and RMSE to compute Weight
-            r2 = p3.get("BEST_R2", 0.0)
-            rmse = p3.get("BEST_RMSE", 1.0)
-            weight = max(0.001, r2) / (rmse + 0.001)
+            # Extract R2 and RMSE from Phase 03 to calculate weight
+            r2 = float(p3.get("BEST_R2", 0.0))
+            rmse = float(p3.get("BEST_RMSE", 1.0))
+            weight = compute_r2_rmse_weight(r2, rmse)
             
             append_log(f"  → R2: {r2:.4f} | RMSE: {rmse:.4f} | Weight: {weight:.4f}", log_path, feedback)
             append_log("  ✓ Phase 03 completed\n", log_path, feedback)
@@ -245,23 +257,44 @@ class SpatioSpectralSDBRunner:
         # ---------------------------------------------------------
         # AGGREGATION: Pixel-wise Median/Mean/Max/Min
         # ---------------------------------------------------------
-        agg_method_idx = masterflow_params.get("SPATIOSPECTRAL_AGGREGATION", 0)
-        agg_methods = ["Median", "Mean", "Max (Deepest)", "Min (Shallowest)", "Weighted Median (R2/RMSE)", "Weighted Mean (R2/RMSE)", "Select Best Scene (Highest R2 / Lowest RMSE)"]
-        agg_method = agg_methods[agg_method_idx] if 0 <= agg_method_idx < len(agg_methods) else "Median"
-        
+        agg_raw = masterflow_params.get("SPATIOSPECTRAL_AGGREGATION", 4)
+        if algorithm and hasattr(algorithm, "parameterAsInt"):
+            try:
+                agg_raw = algorithm.parameterAsInt(masterflow_params, "SPATIOSPECTRAL_AGGREGATION", context)
+            except Exception:
+                pass
+
+        if isinstance(agg_raw, str):
+            if agg_raw in AGGREGATION_METHODS:
+                agg_method = agg_raw
+            else:
+                try:
+                    idx = int(agg_raw)
+                    agg_method = AGGREGATION_METHODS[idx] if 0 <= idx < len(AGGREGATION_METHODS) else "Weighted Median (R2/RMSE)"
+                except ValueError:
+                    agg_method = "Weighted Median (R2/RMSE)"
+        elif isinstance(agg_raw, (int, float)):
+            idx = int(agg_raw)
+            agg_method = AGGREGATION_METHODS[idx] if 0 <= idx < len(AGGREGATION_METHODS) else "Weighted Median (R2/RMSE)"
+        else:
+            agg_method = "Weighted Median (R2/RMSE)"
+        self.agg_method = agg_method
+
         append_log("════════════════════════════════════════════════════════════", log_path, feedback)
         append_log("SPATIOSPECTRAL AGGREGATION".center(60), log_path, feedback)
         append_log("════════════════════════════════════════════════════════════", log_path, feedback)
         
-        safe_agg_method_name = agg_method.replace("/", "_").replace("\\", "_").replace(" ", "_")
+        safe_agg_method_name = (
+            agg_method.replace("/", "_").replace("\\", "_").replace(" ", "_").replace(":", "_").replace("[", "").replace("]", "")
+        )
         aggregated_depth_path = os.path.join(aggregated_dir, f"Aggregated_Depth_{safe_agg_method_name}.tif")
         aggregated_mask_path = os.path.join(aggregated_dir, "Aggregated_Intersection_Mask.tif")
         
-        if agg_method == "Select Best Scene (Highest R2 / Lowest RMSE)":
+        if agg_method == "Select Best Scene (High R2 / Low RMSE)":
             best_idx = p3_weights.index(max(p3_weights))
             best_depth_map = p3_depth_maps[best_idx]
             
-            append_log(f"→ Selected Scene {best_idx+1} as the Best Scene (Weight: {p3_weights[best_idx]:.4f}).", log_path, feedback)
+            append_log(f"→ Selected Scene {best_idx+1} as the Best Scene based on R2/RMSE (Weight: {p3_weights[best_idx]:.4f}).", log_path, feedback)
             
             import shutil
             shutil.copy2(best_depth_map, aggregated_depth_path)
@@ -434,10 +467,15 @@ class SpatioSpectralSDBRunner:
             p4_params["INPUT_ORIGINAL_FEAT"] = aggregated_depth_path
             
             # 1 = Phase 03 Depth Map, 2 = Residual Error Grid. (0 = Feature Stack, which we exclude)
-            ui_stack = masterflow_params.get("STACK_COMPONENTS_P4", [0, 1])
-            p4_params["STACK_COMPONENTS"] = [x + 1 for x in ui_stack]
+            if algorithm and hasattr(algorithm, "parameterAsEnums"):
+                ui_stack = algorithm.parameterAsEnums(masterflow_params, "STACK_COMPONENTS_P4", context)
+            else:
+                ui_stack = masterflow_params.get("STACK_COMPONENTS_P4", [0, 1])
+            if not ui_stack:
+                ui_stack = [0, 1]
+            p4_params["STACK_COMPONENTS"] = [int(x) + 1 for x in ui_stack]
             
-            p4_params["INPUT_MASK"] = aggregated_mask_path
+            p4_params["INPUT_MASK"] = aggregated_mask_path if (aggregated_mask_path and os.path.exists(aggregated_mask_path)) else None
             
             # Use Adaptive Training points if provided, else fallback to main training points
             adaptive_train = masterflow_params.get("INPUT_ADAPTIVE_TRAIN")
@@ -449,10 +487,19 @@ class SpatioSpectralSDBRunner:
                 p4_params["FIELD_TRAIN"] = masterflow_params.get("FIELD_DEPTH")
                 
             p4_params["OUTPUT_FOLDER"] = p4_dir
-            if "SPATIAL_CV_P4" in masterflow_params:
-                p4_params["SPATIAL_CV"] = masterflow_params["SPATIAL_CV_P4"]
-            p4_params["ENABLE_DEPTH_VARIANCE_CORR"] = masterflow_params.get("ENABLE_DEPTH_VARIANCE_CORR_P4", False)
-            p4_params["ENABLE_SPATIAL_RESIDUAL_CORR"] = masterflow_params.get("ENABLE_SPATIAL_RESIDUAL_CORR_P4", True)
+            if algorithm and hasattr(algorithm, "parameterAsBool"):
+                p4_params["SPATIAL_CV"] = algorithm.parameterAsBool(masterflow_params, "SPATIAL_CV_P4", context)
+                p4_params["ENABLE_DEPTH_VARIANCE_CORR"] = algorithm.parameterAsBool(masterflow_params, "ENABLE_DEPTH_VARIANCE_CORR_P4", context)
+                p4_params["ENABLE_SPATIAL_RESIDUAL_CORR"] = algorithm.parameterAsBool(masterflow_params, "ENABLE_SPATIAL_RESIDUAL_CORR_P4", context)
+            else:
+                p4_params["SPATIAL_CV"] = masterflow_params.get("SPATIAL_CV_P4", False)
+                p4_params["ENABLE_DEPTH_VARIANCE_CORR"] = masterflow_params.get("ENABLE_DEPTH_VARIANCE_CORR_P4", False)
+                p4_params["ENABLE_SPATIAL_RESIDUAL_CORR"] = masterflow_params.get("ENABLE_SPATIAL_RESIDUAL_CORR_P4", True)
+
+            if algorithm and hasattr(algorithm, "parameterAsInt"):
+                p4_params["RESIDUAL_INTERP_METHOD"] = algorithm.parameterAsInt(masterflow_params, "RESIDUAL_INTERP_METHOD", context)
+                p4_params["KNN_NEIGHBORS"] = algorithm.parameterAsInt(masterflow_params, "KNN_NEIGHBORS", context)
+                p4_params["MAX_GPR_SAMPLES"] = algorithm.parameterAsInt(masterflow_params, "MAX_GPR_SAMPLES", context)
             
             p4 = processing.run("sdb_tools:sdb_phase4_adaptive", p4_params, is_child_algorithm=True, context=context, feedback=feedback)
             
@@ -464,14 +511,33 @@ class SpatioSpectralSDBRunner:
             # CLEANUP Phase 4 Output
             # ---------------------------------------------------------
             if raw_p4_depth and os.path.exists(raw_p4_depth):
-                p4_final_depth = raw_p4_depth
+                max_depth = masterflow_params.get("MAX_DEPTH_THRESHOLD", -30.0) if en_max_d else -999999.0
+                p4_clamped = os.path.join(p4_dir, "4_Phase04_Depth_Cleaned.tif")
+                ref_feat_p4 = aggregated_depth_path
+                clean_depth_map(raw_p4_depth, ref_feat_p4, max_depth, p4_clamped, context, feedback)
+                current_p4 = p4_clamped
+
+                if apply_slope:
+                    p4_slope = os.path.join(p4_dir, "4_Phase04_Depth_SlopeFiltered.tif")
+                    current_p4 = slope_filter_depth(
+                        current_p4,
+                        slope_threshold=slope_threshold_val,
+                        out_path=p4_slope,
+                        context=context,
+                        feedback=feedback,
+                    )
+
+                if remove_pos:
+                    p4_no_pos = os.path.join(p4_dir, "4_Phase04_Depth_NoPositives.tif")
+                    remove_positive_pixels(current_p4, p4_no_pos, feedback)
+                    current_p4 = p4_no_pos
 
                 if os.path.exists(aggregated_osw_poly) and os.path.getsize(aggregated_osw_poly) > 0:
                     append_log("  → Clipping Phase 04 Map with Aggregated OSW Polygon...", log_path, feedback)
                     p4_osw_clipped = os.path.join(p4_dir, "Phase04_Final_Depth_OSW_Clipped.tif")
                     try:
                         clip_params = {
-                            "INPUT": p4_final_depth,
+                            "INPUT": current_p4,
                             "MASK": aggregated_osw_poly,
                             "NODATA": -9999.0,
                             "ALPHA_BAND": False,
@@ -491,12 +557,18 @@ class SpatioSpectralSDBRunner:
                             is_child_algorithm=True,
                         )
                         if os.path.exists(p4_osw_clipped):
-                            p4_final_depth = p4_osw_clipped
-                            if raw_p4_depth and os.path.exists(raw_p4_depth) and raw_p4_depth != p4_osw_clipped:
-                                import shutil
-                                shutil.copy2(p4_osw_clipped, raw_p4_depth)
+                            current_p4 = p4_osw_clipped
                     except Exception as e:
                         append_log(f"  ⚠ WARNING: Failed to clip Phase 04 with OSW Polygon: {e}", log_path, feedback)
+
+                p4_final_depth = current_p4
+                if raw_p4_depth and os.path.exists(raw_p4_depth) and raw_p4_depth != p4_final_depth:
+                    try:
+                        import shutil
+                        shutil.copy2(p4_final_depth, raw_p4_depth)
+                    except Exception:
+                        pass
+                write_qml_style(p4_final_depth)
             else:
                 p4_final_depth = raw_p4_depth
         else:
@@ -535,7 +607,10 @@ class SpatioSpectralSDBRunner:
         final_depth_for_3d = p4_final_depth if p4_final_depth else aggregated_depth_path
         if final_depth_for_3d and os.path.exists(final_depth_for_3d):
             try:
-                from Bathymetrix_AI.core.pipeline import generate_3d_seabed_png
+                try:
+                    from Bathymetrix_AI.core.pipeline import generate_3d_seabed_png
+                except (ImportError, ValueError):
+                    from core.pipeline import generate_3d_seabed_png
                 out_3d_png = os.path.join(p5_dir, "5_Plot_3D_Seabed.png")
                 generate_3d_seabed_png(final_depth_for_3d, out_3d_png, feedback)
             except Exception as e:
@@ -544,7 +619,10 @@ class SpatioSpectralSDBRunner:
         # Generate Interactive HTML Dashboard (Always)
         append_log("  → Generating Interactive HTML Dashboard...", log_path, feedback)
         try:
-            from Bathymetrix_AI.core.pipeline import generate_html_dashboard
+            try:
+                from Bathymetrix_AI.core.pipeline import generate_html_dashboard
+            except (ImportError, ValueError):
+                from core.pipeline import generate_html_dashboard
             generate_html_dashboard(
                 out_dir=self.master_output_folder,
                 p3_dir=self.master_output_folder,
@@ -568,13 +646,11 @@ class SpatioSpectralSDBRunner:
 
         # Generate standardized ocean bathymetry .qml styles & load layers to canvas
         try:
-            from Bathymetrix_AI.infrastructure.raster_io import write_qml_style
-            from Bathymetrix_AI.infrastructure.canvas import add_raster_to_canvas
             if aggregated_depth_path and os.path.exists(aggregated_depth_path):
                 qml_agg = write_qml_style(aggregated_depth_path)
                 add_raster_to_canvas(
                     aggregated_depth_path,
-                    f"Aggregated Depth ({self.agg_method})",
+                    f"Aggregated Depth ({agg_method})",
                     context=context,
                     style_path=qml_agg,
                 )
@@ -582,30 +658,29 @@ class SpatioSpectralSDBRunner:
                 qml_p4 = write_qml_style(p4_final_depth)
                 add_raster_to_canvas(
                     p4_final_depth,
-                    f"Phase 04 Final Refined Depth ({self.agg_method})",
+                    f"Phase 04 Final Refined Depth ({agg_method})",
                     context=context,
                     style_path=qml_p4,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            append_log(f"  ℹ Notice: Canvas layer styling: {e}", log_path, feedback)
 
 
         total_elapsed = time.time() - start_time
         tm, ts = divmod(int(total_elapsed), 60)
         th, tm = divmod(tm, 60)
 
+        dash_path = os.path.join(self.master_output_folder, "SDB_Validation_Dashboard.html")
+        if not os.path.exists(dash_path):
+            dash_path = os.path.join(p5_dir, "SDB_Validation_Dashboard.html")
+        primary_files = {
+            "Aggregated Depth Map": aggregated_depth_path,
+            "Refined Depth Map": p4_final_depth,
+            "HTML Dashboard": dash_path if os.path.exists(dash_path) else None,
+            "3D Seabed Plot": os.path.join(p5_dir, "5_Plot_3D_Seabed.png") if os.path.exists(os.path.join(p5_dir, "5_Plot_3D_Seabed.png")) else None,
+            "IHO S-44 Assessment CSV": os.path.join(p5_dir, "5_Stratified_Error_Analysis.csv") if os.path.exists(os.path.join(p5_dir, "5_Stratified_Error_Analysis.csv")) else None
+        }
         try:
-            from Bathymetrix_AI.infrastructure.logging import log_module_completion
-            dash_path = os.path.join(self.master_output_folder, "SDB_Validation_Dashboard.html")
-            if not os.path.exists(dash_path):
-                dash_path = os.path.join(p5_dir, "SDB_Validation_Dashboard.html")
-            primary_files = {
-                "Aggregated Depth Map": aggregated_depth_path,
-                "Refined Depth Map": p4_final_depth,
-                "HTML Dashboard": dash_path if os.path.exists(dash_path) else None,
-                "3D Seabed Plot": os.path.join(p5_dir, "5_Plot_3D_Seabed.png") if os.path.exists(os.path.join(p5_dir, "5_Plot_3D_Seabed.png")) else None,
-                "IHO S-44 Assessment CSV": os.path.join(p5_dir, "5_Stratified_Error_Analysis.csv") if os.path.exists(os.path.join(p5_dir, "5_Stratified_Error_Analysis.csv")) else None
-            }
             log_module_completion(
                 module_title=f"SDB SpatioSpectral Masterflow ({len(tif_files)} Scenes - Elapsed: {th:02d}:{tm:02d}:{ts:02d})",
                 out_dir=self.master_output_folder,
@@ -614,16 +689,23 @@ class SpatioSpectralSDBRunner:
                 feedback=feedback
             )
         except Exception:
+            folder_url = format_clickable_url(self.master_output_folder)
             append_log("════════════════════════════════════════════════════════════", log_path, feedback)
-            append_log("✓ SDB SpatioSpectral Masterflow Completed".center(60), log_path, feedback)
+            append_log(f"✅ SDB SpatioSpectral Masterflow ({len(tif_files)} Scenes) - Finished Successfully".center(60), log_path, feedback)
             append_log("════════════════════════════════════════════════════════════", log_path, feedback)
-            append_log(f"Scenes processed : {len(tif_files)} / {len(tif_files)}", log_path, feedback)
+            append_log(f"📁 Output Directory : {folder_url}", log_path, feedback)
+            for lbl, fpath in primary_files.items():
+                if fpath and os.path.exists(fpath):
+                    append_log(f"   • {lbl:<18} : {format_clickable_url(fpath)}", log_path, feedback)
             append_log(f"Total elapsed    : {th:02d}:{tm:02d}:{ts:02d}", log_path, feedback)
-            append_log("Status           : SUCCESS", log_path, feedback)
             append_log("════════════════════════════════════════════════════════════\n", log_path, feedback)
         
         return {
+            "OUTPUT_MASTER_FOLDER": self.master_output_folder,
+            "OUTPUT_FOLDER": self.master_output_folder,
             "AGGREGATED_DEPTH": aggregated_depth_path,
             "FINAL_REFINED_DEPTH": p4_final_depth,
-            "OUTPUT_FOLDER": self.master_output_folder
+            "HTML_DASHBOARD": dash_path if os.path.exists(dash_path) else None,
+            "PHASE_04_FOLDER": p4_dir,
+            "PHASE_05_FOLDER": p5_dir,
         }

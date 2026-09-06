@@ -7,16 +7,16 @@
 </td>
 <td>
 
-**Bathymetrix-AI v7.7: Advanced SDB Toolkit & Coastal Dynamics**
+**Bathymetrix-AI v7.8: Advanced SDB Toolkit & Coastal Dynamics**
 
 </td>
 </tr>
 </table>
 
 
-> **Note:** Bathymetrix-AI v7.7 supports any satellite imagery provided that the imagery is atmospherically corrected (Surface Reflectance) and the raster values are stored as Float.
+> **Note:** Bathymetrix-AI v7.8 supports any satellite imagery provided that the imagery is atmospherically corrected (Surface Reflectance) and the raster values are stored as Float.
 
-**Bathymetrix-AI (v7.7)** is a professional QGIS research toolkit for high-precision Satellite-Derived Bathymetry (SDB).
+**Bathymetrix-AI (v7.8)** is a professional QGIS research toolkit for high-precision Satellite-Derived Bathymetry (SDB).
 
 The toolkit integrates multispectral satellite imagery with ICESat-2 (ATL24) LiDAR bathymetry through a modular and adaptive Machine Learning framework. It is designed to automate the main SDB processing steps while maintaining control over data quality, model selection, spatial refinement, uncertainty, and scientific validation.
 
@@ -255,9 +255,6 @@ pip install numpy pandas rasterio matplotlib seaborn scikit-learn>=1.5.0 scipy j
 
 **Author:** Mohamed Aly Nasef  
 **Email:** Eng.m.nasef2017@gmail.com, Nasefm.aly@alexu.edu.eg  
-
-
-Nasef M.Aly. (2026). Nasef2017/Bathymetrix-AI: Bathymetrix_AI V7.7 (Version v7.7) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22234482
 
 
 🤖 **AI Acknowledgment**  
